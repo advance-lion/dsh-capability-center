@@ -1,0 +1,16 @@
+# dsh-capability-center bundle patch: inserts the dual-face plugin row
+# into the web profile roster. Applied as a profile bundle layer (the
+# `dsh.bundle.patch` manifest field) over dsh-base.
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs
+# in the host process (capability registry, skill/MCP/CLI adapters, HTTP routes
+# at /api/capability-center/*), and the `dsh.client` declaration in package.json
+# makes the browser half (exports "./client", served at /plugins/<id>/client.js)
+# load in the web GUI — rendering the Capability Center entry in the sidebar
+# below the "New Conversation" button.
+#
+# `id` is the row the user's own ~/.dsh/cordis.patch.yml toggles (keep it
+# stable); `name` is the published package name and must match package.json.
+- insert:
+    - id: ui-capability-center
+      name: '@wanganxin/dsh-capability-center'

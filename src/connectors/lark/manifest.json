@@ -1,0 +1,24 @@
+{
+  "id": "feishu",
+  "type": "connector",
+  "name": "飞书",
+  "description": "连接飞书消息、文档与协作能力",
+  "category": ["办公", "协作"],
+  "icon": "🟦",
+  "transport": {
+    "type": "cli",
+    "command": "lark"
+  },
+  "capabilities": [
+    "message.send",
+    "message.search",
+    "document.read"
+  ],
+  "requirements": {
+    "commands": ["lark"]
+  },
+  "provider": {
+    "name": "official"
+  },
+  "sourceUrl": "https://open.larksuite.com/document/mcp_open_tools/feishu-cli-let-ai-actually-do-your-work-in-feishu"
+}
