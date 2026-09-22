@@ -3,169 +3,257 @@
  * MCP client (@deepseek-ai/dsh-mcp-client).
  *
  * MCP is just one transport for a Connector. This adapter:
- * 1. Reads MCP server configs from DSH settings for display
- * 2. Dynamically loads/unloads MCP client plugin instances to connect/disconnect
- * 3. Reports health by checking if the server's tools are registered on ctx.tools
+ * 1. Reads MCP server configs from ~/.dsh/mcp.json (same format as dsh-skills-mcp-manager)
+ * 2. Dynamically loads/unloads MCP client plugin fibers to connect/disconnect
+ * 3. Reports health by checking fiber status
  *
- * It does NOT re-implement the MCP runtime — it delegates to dsh-mcp-client.
+ * The connection logic is adapted from dsh-skills-mcp-manager's McpManager,
+ * which has already proven that DSH can manage real MCP connections via
+ * ctx.plugin(mcpClient, config) fibers.
  */
+import type { Context, Fiber } from '@deepseek-ai/cordis'
+import * as mcpClient from '@deepseek-ai/dsh-mcp-client'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { Capability, HealthStatus } from '../capability/types'
 
+// ── MCP config types (compatible with dsh-skills-mcp-manager) ──────────────
+
+export interface McpServerConfig {
+  name: string
+  transport: 'stdio' | 'streamable-http'
+  enabled?: boolean
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string
+  url?: string
+  headers?: Record<string, string>
+}
+
+// ── Config file I/O ──────────────────────────────────────────────────────────
+
+/** The ~/.dsh/mcp.json path (same as dsh-skills-mcp-manager). */
+function mcpConfigPath(): string {
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(dshHome, 'mcp.json')
+}
+
+/** Read the persisted MCP servers document (never throws). */
+function readMcpConfig(): { servers: McpServerConfig[] } {
+  const target = mcpConfigPath()
+  try {
+    if (!existsSync(target)) return { servers: [] }
+    const raw = readFileSync(target, 'utf8')
+    if (!raw || raw.trim() === '') return { servers: [] }
+    const data = JSON.parse(raw) as { servers?: unknown }
+    return { servers: Array.isArray(data.servers) ? (data.servers as McpServerConfig[]) : [] }
+  } catch {
+    return { servers: [] }
+  }
+}
+
+/** Persist the MCP servers document. */
+function writeMcpConfig(data: { servers: McpServerConfig[] }): void {
+  const target = mcpConfigPath()
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, JSON.stringify(data, null, 2), 'utf8')
+}
+
+// ── Config mapping ──────────────────────────────────────────────────────────
+
+const TOOL_CALL_TIMEOUT_MS = 60_000
+const RECONNECT = { enabled: true, initialDelayMs: 500, maxDelayMs: 30_000, maxAttempts: 10 }
+
+/** Map a persisted server definition to the mcp-client plugin Config. */
+function toMcpClientConfig(s: McpServerConfig): mcpClient.Config {
+  const base = {
+    serverName: s.name,
+    toolCallTimeoutMs: TOOL_CALL_TIMEOUT_MS,
+    failOnStartupError: true,
+    reconnect: RECONNECT,
+  }
+  if (s.transport === 'stdio') {
+    return {
+      ...base,
+      transport: 'stdio',
+      command: s.command ?? '',
+      args: s.args ?? [],
+      env: s.env ?? {},
+      cwd: s.cwd ?? '',
+    } as mcpClient.Config
+  }
+  return {
+    ...base,
+    transport: 'streamable-http',
+    url: s.url ?? '',
+    headers: s.headers ?? {},
+  } as mcpClient.Config
+}
+
+// ── Adapter interface ───────────────────────────────────────────────────────
+
 export interface MCPAdapter {
-  /** Discover configured MCP servers and convert to Capability objects. */
   discover(): Promise<Capability[]>
-
-  /** Install (register) an MCP server config. */
   install(cap: Capability): Promise<void>
-
-  /** Uninstall (remove) an MCP server config. */
   uninstall(cap: Capability): Promise<void>
-
-  /** Connect to an MCP server — the server's tools register on ctx.tools. */
   connect(cap: Capability): Promise<void>
-
-  /** Disconnect from an MCP server. */
   disconnect(cap: Capability): Promise<void>
-
-  /** Health check — verify the MCP server is connected. */
   health(cap: Capability): Promise<HealthStatus>
 }
 
-/** Track active MCP plugin instances for connect/disconnect. */
-interface MCPInstance {
-  serverName: string
-  dispose: () => void
+interface LiveServer {
+  config: McpServerConfig
+  fiber: Fiber
 }
+
+type FiberStatus = 'connecting' | 'running' | 'failed' | 'stopped'
+
+// ── Concrete adapter ────────────────────────────────────────────────────────
 
 /**
  * Concrete MCPAdapter that delegates to @deepseek-ai/dsh-mcp-client.
- * The Cordis context is injected at plugin apply time to manage plugin lifecycle.
+ * Uses Cordis plugin fibers for real connect/disconnect — same proven
+ * approach as dsh-skills-mcp-manager's McpManager.
  */
 export class DefaultMCPAdapter implements MCPAdapter {
-  /** Active MCP plugin instances keyed by serverName. */
-  private instances = new Map<string, MCPInstance>()
+  private readonly live = new Map<string, LiveServer>()
+  private readonly statuses = new Map<string, { status: FiberStatus; error?: string }>()
 
   constructor(
-    private mcpClient?: any,
-    private ctx?: any,
+    _mcpClient?: any,
+    private ctx?: Context,
   ) {}
 
   async discover(): Promise<Capability[]> {
-    // Read MCP server configs from DSH settings.
-    // The settings service stores MCP configs under dsh.mcp.servers.
-    const settings = this.ctx?.get('dsh.settings')
-    if (!settings) return []
-
-    const mcpConfigs = (await settings.get('mcp.servers')) ?? []
-    if (!Array.isArray(mcpConfigs)) return []
-
-    return mcpConfigs.map((cfg: any): Capability => ({
-      id: cfg.serverName ?? cfg.id ?? 'unknown',
-      type: 'connector',
-      name: cfg.serverName ?? cfg.name ?? 'MCP Server',
-      description: cfg.description ?? `MCP Server: ${cfg.serverName ?? cfg.command}`,
-      icon: '🔌',
-      category: ['开发'],
-      tags: ['mcp', cfg.serverName ?? ''],
-      transport: 'mcp',
-      source: 'DSH MCP Client',
-      sourcePath: 'core/adapters/mcp-adapter.ts',
-      sourceUrl: 'https://github.com/modelcontextprotocol/servers',
-      status: this.instances.has(cfg.serverName) ? 'connected' : 'available',
-      capabilities: [],
-      runtime: {
+    const { servers } = readMcpConfig()
+    return servers.map((s): Capability => {
+      const st = this.statuses.get(s.name)
+      const enabled = s.enabled !== false
+      const status: Capability['status'] = !enabled
+        ? 'disabled'
+        : st?.status === 'running'
+          ? 'connected'
+          : st?.status === 'failed'
+            ? 'error'
+            : 'available'
+      return {
+        id: s.name,
+        type: 'connector',
+        name: s.name,
+        description: s.transport === 'stdio'
+          ? `MCP Server: ${s.command} ${(s.args ?? []).join(' ')}`
+          : `MCP Server: ${s.url}`,
+        icon: '🔌',
+        category: ['开发'],
+        tags: ['mcp', s.name],
         transport: 'mcp',
-        serverName: cfg.serverName,
-        command: cfg.command,
-      },
-      provider: { name: 'official' },
-    }))
+        source: 'DSH MCP Client',
+        sourcePath: 'core/adapters/mcp-adapter.ts',
+        sourceUrl: 'https://github.com/modelcontextprotocol/servers',
+        status,
+        capabilities: [],
+        runtime: {
+          transport: 'mcp',
+          serverName: s.name,
+          command: s.command,
+          endpoint: s.url,
+        },
+        provider: { name: 'official' },
+      }
+    })
   }
 
   async install(cap: Capability): Promise<void> {
-    // Register MCP server config in DSH settings.
-    const settings = this.ctx?.get('dsh.settings')
-    if (!settings) throw new Error('dsh.settings service not available')
-
-    const configs = (await settings.get('mcp.servers')) ?? []
-    configs.push({
+    const { servers } = readMcpConfig()
+    const newServer: McpServerConfig = {
+      name: cap.id,
       transport: 'stdio',
-      serverName: cap.id,
+      enabled: true,
       command: cap.runtime?.command ?? '',
       args: [],
       env: {},
       cwd: '',
-      toolCallTimeoutMs: 30000,
-      failOnStartupError: false,
-    })
-    await settings.set('mcp.servers', configs)
+    }
+    servers.push(newServer)
+    writeMcpConfig({ servers })
   }
 
   async uninstall(cap: Capability): Promise<void> {
-    // Remove MCP server config from DSH settings.
-    const settings = this.ctx?.get('dsh.settings')
-    if (!settings) throw new Error('dsh.settings service not available')
-
-    const configs = (await settings.get('mcp.servers')) ?? []
-    const filtered = configs.filter(
-      (c: any) => c.serverName !== cap.id,
-    )
-    await settings.set('mcp.servers', filtered)
-
-    // Also disconnect if active.
+    const { servers } = readMcpConfig()
+    const filtered = servers.filter((s) => s.name !== cap.id)
+    writeMcpConfig({ servers: filtered })
     await this.disconnect(cap)
   }
 
   async connect(cap: Capability): Promise<void> {
-    if (!this.mcpClient || !this.ctx) {
-      throw new Error('MCP client or context not available')
-    }
+    if (!this.ctx) throw new Error('Cordis context not available')
 
     const serverName = cap.runtime?.serverName ?? cap.id
-    if (this.instances.has(serverName)) return // already connected
+    if (this.live.has(serverName)) return // already connected
 
-    // Read the config for this server.
-    const settings = this.ctx.get('dsh.settings')
-    const configs = (await settings?.get('mcp.servers')) ?? []
-    const cfg = configs.find((c: any) => c.serverName === serverName)
+    const { servers } = readMcpConfig()
+    const cfg = servers.find((s) => s.name === serverName)
     if (!cfg) throw new Error(`MCP server config not found: ${serverName}`)
 
-    // Dynamically load the MCP client plugin with this config.
-    const dispose = this.ctx.plugin(this.mcpClient, cfg)
-    this.instances.set(serverName, { serverName, dispose })
+    this.statuses.set(serverName, { status: 'connecting' })
+
+    let fiber: Fiber & PromiseLike<Fiber>
+    try {
+      fiber = this.ctx.plugin(mcpClient, toMcpClientConfig(cfg))
+    } catch (e) {
+      this.statuses.set(serverName, { status: 'failed', error: String((e as Error)?.message ?? e) })
+      throw e
+    }
+
+    this.live.set(serverName, { config: cfg, fiber })
+
+    // Track async resolution.
+    fiber.then(
+      () => { this.statuses.set(serverName, { status: 'running' }) },
+      (e) => {
+        this.live.delete(serverName)
+        this.statuses.set(serverName, { status: 'failed', error: String((e as Error)?.message ?? e) })
+      },
+    )
   }
 
   async disconnect(cap: Capability): Promise<void> {
     const serverName = cap.runtime?.serverName ?? cap.id
-    const instance = this.instances.get(serverName)
-    if (!instance) return // not connected
+    const entry = this.live.get(serverName)
+    if (!entry) return
 
-    instance.dispose()
-    this.instances.delete(serverName)
+    this.live.delete(serverName)
+    this.statuses.set(serverName, { status: 'stopped' })
+    try { await entry.fiber.dispose() } catch { /* already gone */ }
   }
 
   async health(cap: Capability): Promise<HealthStatus> {
     const serverName = cap.runtime?.serverName ?? cap.id
-    const connected = this.instances.has(serverName)
+    const st = this.statuses.get(serverName)
 
-    if (!connected) {
+    if (!st || st.status === 'stopped') {
       return { healthy: false, message: 'Not connected', lastChecked: Date.now() }
     }
-
-    // Check if tools are registered by looking for mcp__<serverName>__ prefix.
-    const tools = this.ctx?.get('dsh.tools')
-    if (tools?.list) {
-      const allTools = tools.list()
-      const hasTools = allTools.some(
-        (t: any) => t.name?.startsWith(`mcp__${serverName}__`),
-      )
-      return {
-        healthy: hasTools,
-        message: hasTools ? undefined : 'Connected but no tools registered',
-        lastChecked: Date.now(),
-      }
+    if (st.status === 'connecting') {
+      return { healthy: false, message: 'Connecting…', lastChecked: Date.now() }
     }
+    if (st.status === 'failed') {
+      return { healthy: false, message: st.error ?? 'Connection failed', lastChecked: Date.now() }
+    }
+    if (st.status === 'running') {
+      return { healthy: true, lastChecked: Date.now() }
+    }
+    return { healthy: false, message: 'Unknown status', lastChecked: Date.now() }
+  }
 
-    return { healthy: true, lastChecked: Date.now() }
+  /** Stop and dispose every live connection (plugin teardown). */
+  async dispose(): Promise<void> {
+    for (const [name, entry] of [...this.live]) {
+      this.live.delete(name)
+      this.statuses.set(name, { status: 'stopped' })
+      try { await entry.fiber.dispose() } catch { /* already gone */ }
+    }
   }
 }

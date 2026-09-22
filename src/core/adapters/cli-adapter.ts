@@ -51,20 +51,200 @@ export interface CLIAdapter {
 /**
  * Capability → CLI command mapping table.
  * Maps semantic capability IDs to CLI subcommands.
+ *
+ * The Agent sees `feishu.message.send`, not `lark message send`.
+ * This table is the translation layer that makes the Connector a
+ * semantic capability layer, not a CLI wrapper.
  */
-const CAPABILITY_MAP: Record<string, { command: string; args: (input: unknown) => string[] }> = {
-  // Feishu / Lark CLI
+const CAPABILITY_MAP: Record<string, { command: string; args: (input: any) => string[] }> = {
+  // ── 消息 IM ──────────────────────────────────────────────
   'feishu.message.send': {
-    command: 'message',
-    args: (input: any) => ['send', '--user', input.user ?? '', '--text', input.text ?? ''],
+    command: 'im',
+    args: (input) => ['send', '--user', input.user ?? '', '--text', input.text ?? ''],
   },
   'feishu.message.search': {
-    command: 'message',
-    args: (input: any) => ['search', '--query', input.query ?? ''],
+    command: 'im',
+    args: (input) => ['search', '--query', input.query ?? ''],
   },
+  'feishu.message.reply': {
+    command: 'im',
+    args: (input) => ['reply', '--message-id', input.messageId ?? '', '--text', input.text ?? ''],
+  },
+  'feishu.chat.create': {
+    command: 'im',
+    args: (input) => ['chat', 'create', '--name', input.name ?? ''],
+  },
+  'feishu.chat.list': {
+    command: 'im',
+    args: () => ['chat', 'list'],
+  },
+  'feishu.file.upload': {
+    command: 'im',
+    args: (input) => ['file', 'upload', '--path', input.filePath ?? ''],
+  },
+  'feishu.card.send': {
+    command: 'im',
+    args: (input) => ['card', 'send', '--user', input.user ?? '', '--card', input.cardJson ?? ''],
+  },
+
+  // ── 云文档 Doc ───────────────────────────────────────────
   'feishu.document.read': {
     command: 'doc',
-    args: (input: any) => ['read', input.docId ?? ''],
+    args: (input) => ['read', input.docId ?? ''],
+  },
+  'feishu.document.create': {
+    command: 'doc',
+    args: (input) => ['create', '--title', input.title ?? '', '--content', input.content ?? ''],
+  },
+  'feishu.document.edit': {
+    command: 'doc',
+    args: (input) => ['edit', input.docId ?? '', '--content', input.content ?? ''],
+  },
+
+  // ── 电子表格 Sheets ──────────────────────────────────────
+  'feishu.sheet.read': {
+    command: 'sheets',
+    args: (input) => ['read', input.sheetId ?? '', '--range', input.range ?? ''],
+  },
+  'feishu.sheet.write': {
+    command: 'sheets',
+    args: (input) => ['write', input.sheetId ?? '', '--range', input.range ?? '', '--value', input.value ?? ''],
+  },
+  'feishu.sheet.create': {
+    command: 'sheets',
+    args: (input) => ['create', '--title', input.title ?? ''],
+  },
+
+  // ── 多维表格 Base ────────────────────────────────────────
+  'feishu.base.read': {
+    command: 'base',
+    args: (input) => ['read', input.baseId ?? '', '--table', input.tableId ?? ''],
+  },
+  'feishu.base.write': {
+    command: 'base',
+    args: (input) => ['write', input.baseId ?? '', '--table', input.tableId ?? '', '--record', input.recordJson ?? ''],
+  },
+
+  // ── 日历 Calendar ────────────────────────────────────────
+  'feishu.calendar.list': {
+    command: 'calendar',
+    args: () => ['list'],
+  },
+  'feishu.calendar.create': {
+    command: 'calendar',
+    args: (input) => ['create', '--title', input.title ?? '', '--start', input.start ?? '', '--end', input.end ?? ''],
+  },
+  'feishu.calendar.search': {
+    command: 'calendar',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+
+  // ── 任务 Task ────────────────────────────────────────────
+  'feishu.task.create': {
+    command: 'task',
+    args: (input) => ['create', '--title', input.title ?? ''],
+  },
+  'feishu.task.list': {
+    command: 'task',
+    args: () => ['list'],
+  },
+  'feishu.task.update': {
+    command: 'task',
+    args: (input) => ['update', input.taskId ?? '', '--status', input.status ?? ''],
+  },
+
+  // ── 邮件 Mail ────────────────────────────────────────────
+  'feishu.mail.send': {
+    command: 'mail',
+    args: (input) => ['send', '--to', input.to ?? '', '--subject', input.subject ?? '', '--body', input.body ?? ''],
+  },
+  'feishu.mail.read': {
+    command: 'mail',
+    args: (input) => ['read', input.mailId ?? ''],
+  },
+  'feishu.mail.search': {
+    command: 'mail',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+
+  // ── 通讯录 Contact ───────────────────────────────────────
+  'feishu.contact.search': {
+    command: 'contact',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+  'feishu.contact.lookup': {
+    command: 'contact',
+    args: (input) => ['lookup', '--open-id', input.openId ?? ''],
+  },
+
+  // ── 云空间 Drive ─────────────────────────────────────────
+  'feishu.drive.upload': {
+    command: 'drive',
+    args: (input) => ['upload', '--path', input.filePath ?? '', '--folder', input.folderId ?? ''],
+  },
+  'feishu.drive.download': {
+    command: 'drive',
+    args: (input) => ['download', input.fileId ?? '', '--to', input.savePath ?? ''],
+  },
+  'feishu.drive.list': {
+    command: 'drive',
+    args: () => ['list'],
+  },
+
+  // ── 知识库 Wiki ──────────────────────────────────────────
+  'feishu.wiki.read': {
+    command: 'wiki',
+    args: (input) => ['read', input.nodeId ?? ''],
+  },
+  'feishu.wiki.search': {
+    command: 'wiki',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+
+  // ── 视频会议 VC ──────────────────────────────────────────
+  'feishu.vc.list': {
+    command: 'vc',
+    args: () => ['list'],
+  },
+  'feishu.vc.search': {
+    command: 'vc',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+
+  // ── 审批 Approval ────────────────────────────────────────
+  'feishu.approval.list': {
+    command: 'approval',
+    args: () => ['list'],
+  },
+  'feishu.approval.create': {
+    command: 'approval',
+    args: (input) => ['create', '--code', input.approvalCode ?? ''],
+  },
+
+  // ── 考勤 Attendance ─────────────────────────────────────
+  'feishu.attendance.record': {
+    command: 'attendance',
+    args: (input) => ['record', '--user', input.user ?? '', '--date', input.date ?? ''],
+  },
+
+  // ── OKR ──────────────────────────────────────────────────
+  'feishu.okr.list': {
+    command: 'okr',
+    args: () => ['list'],
+  },
+  'feishu.okr.update': {
+    command: 'okr',
+    args: (input) => ['update', input.okrId ?? '', '--progress', input.progress ?? ''],
+  },
+
+  // ── 妙记 Minutes ─────────────────────────────────────────
+  'feishu.minutes.search': {
+    command: 'minutes',
+    args: (input) => ['search', '--query', input.query ?? ''],
+  },
+  'feishu.minutes.read': {
+    command: 'minutes',
+    args: (input) => ['read', input.minuteId ?? ''],
   },
 }
 

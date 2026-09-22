@@ -27,16 +27,33 @@ const builtinCapabilities: Capability[] = [
     id: 'feishu',
     type: 'connector',
     name: '飞书',
-    description: '连接飞书消息、文档与协作能力',
+    description: '连接飞书消息、文档、表格、日历、任务、邮件等全量协作能力',
     icon: '🟦',
     category: ['办公', '协作', '精选'],
-    tags: ['feishu', 'lark', '消息', '文档'],
+    tags: ['feishu', 'lark', '消息', '文档', '表格', '日历', '任务', '邮件'],
     transport: 'cli',
     source: 'Lark CLI',
     sourcePath: 'connectors/lark/',
     sourceUrl: 'https://open.larksuite.com/document/mcp_open_tools/feishu-cli-let-ai-actually-do-your-work-in-feishu',
     status: 'available',
-    capabilities: ['message.send', 'message.search', 'document.read'],
+    capabilities: [
+      'message.send', 'message.search', 'message.reply',
+      'chat.create', 'chat.list', 'file.upload', 'card.send',
+      'document.read', 'document.create', 'document.edit',
+      'sheet.read', 'sheet.write', 'sheet.create',
+      'base.read', 'base.write',
+      'calendar.list', 'calendar.create', 'calendar.search',
+      'task.create', 'task.list', 'task.update',
+      'mail.send', 'mail.read', 'mail.search',
+      'contact.search', 'contact.lookup',
+      'drive.upload', 'drive.download', 'drive.list',
+      'wiki.read', 'wiki.search',
+      'vc.list', 'vc.search',
+      'approval.list', 'approval.create',
+      'attendance.record',
+      'okr.list', 'okr.update',
+      'minutes.search', 'minutes.read',
+    ],
     runtime: { transport: 'cli', command: 'lark' },
     install: { requirements: { commands: ['lark'] } },
     provider: { name: 'official' },
@@ -207,12 +224,13 @@ export function apply(ctx: Context) {
   // --- Create adapters ---
   // SkillAdapter: talks to ctx.skills (SkillRegistry) for discovery/enable/disable.
   const skillAdapter = new DefaultSkillAdapter(ctx.get('skills'))
-  // MCPAdapter: delegates to dsh-mcp-client plugin + dsh.settings for config.
-  const mcpAdapter = new DefaultMCPAdapter(ctx.get('dsh.mcp'), ctx)
+  // MCPAdapter: delegates to dsh-mcp-client plugin + reads ~/.dsh/mcp.json.
+  // Uses Cordis fibers for real connect/disconnect (same as dsh-skills-mcp-manager).
+  const mcpAdapter = new DefaultMCPAdapter(undefined, ctx)
   // CLIAdapter: spawns CLI subprocesses (lark, etc.) for detect/install/auth/execute.
   const cliAdapter = new DefaultCLIAdapter()
   // IMRecommendationAdapter: recommends dsh-im for IM capabilities.
-  const imAdapter = new DefaultIMRecommendationAdapter()
+  const imAdapter = new DefaultIMRecommendationAdapter(ctx)
 
   // --- Create catalog and register providers ---
   const catalog = new CapabilityCatalog()
