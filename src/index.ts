@@ -205,9 +205,13 @@ export const inject = ['dsh.webserver']
 
 export function apply(ctx: Context) {
   // --- Create adapters ---
-  const skillAdapter = new DefaultSkillAdapter(ctx.get('dsh.skills'))
-  const mcpAdapter = new DefaultMCPAdapter(ctx.get('dsh.mcp'))
+  // SkillAdapter: talks to ctx.skills (SkillRegistry) for discovery/enable/disable.
+  const skillAdapter = new DefaultSkillAdapter(ctx.get('skills'))
+  // MCPAdapter: delegates to dsh-mcp-client plugin + dsh.settings for config.
+  const mcpAdapter = new DefaultMCPAdapter(ctx.get('dsh.mcp'), ctx)
+  // CLIAdapter: spawns CLI subprocesses (lark, etc.) for detect/install/auth/execute.
   const cliAdapter = new DefaultCLIAdapter()
+  // IMRecommendationAdapter: recommends dsh-im for IM capabilities.
   const imAdapter = new DefaultIMRecommendationAdapter()
 
   // --- Create catalog and register providers ---

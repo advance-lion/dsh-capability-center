@@ -3,18 +3,24 @@
  *
  * This is a critical layer: many real-world services (Feishu, GitHub, etc.)
  * have mature CLIs but no MCP server. The CLIAdapter:
- * 1. Detects whether the CLI is installed
- * 2. Installs the CLI if missing
+ * 1. Detects whether the CLI is installed (checks PATH)
+ * 2. Installs the CLI if missing (npm install -g, brew install, etc.)
  * 3. Authenticates (OAuth, token, etc.)
  * 4. Executes semantic capabilities by translating to CLI commands
  *
  * The Agent sees `feishu.message.send`, not `lark message send`.
  */
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { platform } from 'node:os'
 import type {
   Capability,
   DetectionResult,
   HealthStatus,
 } from '../capability/types'
+
+const execFileAsync = promisify(execFile)
+const isWindows = platform() === 'win32'
 
 export interface CLIAdapter {
   /** Detect whether the CLI tool is installed and its version. */
@@ -43,43 +49,166 @@ export interface CLIAdapter {
 }
 
 /**
+ * Capability → CLI command mapping table.
+ * Maps semantic capability IDs to CLI subcommands.
+ */
+const CAPABILITY_MAP: Record<string, { command: string; args: (input: unknown) => string[] }> = {
+  // Feishu / Lark CLI
+  'feishu.message.send': {
+    command: 'message',
+    args: (input: any) => ['send', '--user', input.user ?? '', '--text', input.text ?? ''],
+  },
+  'feishu.message.search': {
+    command: 'message',
+    args: (input: any) => ['search', '--query', input.query ?? ''],
+  },
+  'feishu.document.read': {
+    command: 'doc',
+    args: (input: any) => ['read', input.docId ?? ''],
+  },
+}
+
+/**
  * Concrete CLIAdapter that spawns CLI subprocesses.
- * Uses Node.js child_process under the hood (injected at apply time).
+ * Uses Node.js child_process.execFile for safe, shell-injection-free execution.
  */
 export class DefaultCLIAdapter implements CLIAdapter {
-  constructor(private exec?: (cmd: string, args: string[]) => Promise<string>) {}
+  /** Track connected (authenticated) connectors. */
+  private connectedSet = new Set<string>()
+
+  /**
+   * @param execFn - Optional override for command execution (testing).
+   * If not provided, uses child_process.execFile.
+   */
+  constructor(private execFn?: (cmd: string, args: string[]) => Promise<string>) {}
+
+  /** Check if a command exists in PATH. */
+  private async commandExists(command: string): Promise<boolean> {
+    const checker = isWindows ? 'where' : 'which'
+    try {
+      await execFileAsync(checker, [command])
+      return true
+    } catch {
+      return false
+    }
+  }
 
   async detect(cap: Capability): Promise<DetectionResult> {
     const command = cap.runtime?.command
     if (!command) return { found: false }
-    // TODO: check if command exists in PATH
-    return { found: false }
+
+    const found = await this.commandExists(command)
+    if (!found) return { found: false }
+
+    // Try to get version.
+    try {
+      const { stdout } = await execFileAsync(command, ['--version'])
+      const version = stdout.trim().split('\n')[0]
+      return { found: true, version }
+    } catch {
+      // Command exists but --version failed — still found.
+      return { found: true }
+    }
   }
 
   async install(cap: Capability): Promise<void> {
-    // TODO: run install steps from cap.install.steps
+    const command = cap.runtime?.command
+    if (!command) throw new Error('No command specified')
+
+    // Check if already installed.
+    const detection = await this.detect(cap)
+    if (detection.found) return
+
+    // Install via npm (most DSH-related CLIs are npm packages).
+    // This is a heuristic; specific connectors can override.
+    const packageName = cap.install?.requirements?.packages?.[0]
+      ?? `@larksuiteoapi/${command}`
+    await execFileAsync('npm', ['install', '-g', packageName])
+  }
+
+  async uninstall(cap: Capability): Promise<void> {
+    const command = cap.runtime?.command
+    if (!command) return
+
+    const packageName = cap.install?.requirements?.packages?.[0]
+      ?? `@larksuiteoapi/${command}`
+    await execFileAsync('npm', ['uninstall', '-g', packageName])
+    this.connectedSet.delete(cap.id)
   }
 
   async authenticate(cap: Capability): Promise<void> {
-    // TODO: run `lark auth login` or equivalent
+    const command = cap.runtime?.command
+    if (!command) throw new Error('No command specified')
+
+    // Run `lark auth login` (or equivalent).
+    // This is typically an interactive flow — the CLI opens a browser for OAuth.
+    // We spawn it with stdio: 'inherit' so the user can interact.
+    const { spawn } = await import('node:child_process')
+    const child = spawn(command, ['auth', 'login'], {
+      stdio: 'inherit',
+      shell: isWindows,
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`Auth failed with exit code ${code}`))
+      })
+      child.on('error', reject)
+    })
   }
 
   async health(cap: Capability): Promise<HealthStatus> {
+    const command = cap.runtime?.command
+    if (!command) return { healthy: false, message: 'No command specified' }
+
+    // 1. Check if CLI is installed.
     const detection = await this.detect(cap)
     if (!detection.found) {
-      return { healthy: false, message: `${cap.runtime?.command} not found` }
+      return {
+        healthy: false,
+        message: `${command} not found in PATH`,
+        lastChecked: Date.now(),
+      }
     }
-    // TODO: run a health check command
-    return { healthy: true, lastChecked: Date.now() }
+
+    // 2. Check auth status.
+    try {
+      const { stdout } = await execFileAsync(command, ['auth', 'status'])
+      const authed = !stdout.toLowerCase().includes('not logged in')
+        && !stdout.toLowerCase().includes('未登录')
+      return {
+        healthy: authed,
+        message: authed ? undefined : 'Not authenticated',
+        lastChecked: Date.now(),
+      }
+    } catch {
+      return {
+        healthy: false,
+        message: 'Auth check failed',
+        lastChecked: Date.now(),
+      }
+    }
   }
 
   async connect(cap: Capability): Promise<void> {
     const health = await this.health(cap)
-    if (!health.healthy) throw new Error(health.message)
+    if (!health.healthy) {
+      throw new Error(health.message ?? 'Health check failed')
+    }
+    this.connectedSet.add(cap.id)
   }
 
   async disconnect(cap: Capability): Promise<void> {
-    // TODO: clear auth state
+    const command = cap.runtime?.command
+    if (command) {
+      try {
+        await execFileAsync(command, ['auth', 'logout'])
+      } catch {
+        // Ignore logout errors.
+      }
+    }
+    this.connectedSet.delete(cap.id)
   }
 
   async execute(
@@ -87,8 +216,32 @@ export class DefaultCLIAdapter implements CLIAdapter {
     capability: string,
     args: unknown,
   ): Promise<unknown> {
-    // TODO: translate semantic capability to CLI command
-    // e.g. feishu.message.send → lark message send ...
-    throw new Error('Not implemented')
+    const command = cap.runtime?.command
+    if (!command) throw new Error('No command specified')
+
+    // Look up the capability mapping.
+    const mapping = CAPABILITY_MAP[capability]
+    if (!mapping) {
+      throw new Error(`Unknown capability: ${capability}`)
+    }
+
+    // Build the full CLI args.
+    const cliArgs = mapping.args(args)
+
+    // Execute the command.
+    if (this.execFn) {
+      const output = await this.execFn(command, [mapping.command, ...cliArgs])
+      return JSON.parse(output)
+    }
+
+    const { stdout } = await execFileAsync(command, [
+      mapping.command,
+      ...cliArgs,
+    ])
+    try {
+      return JSON.parse(stdout)
+    } catch {
+      return stdout.trim()
+    }
   }
 }
