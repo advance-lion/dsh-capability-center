@@ -1,89 +1,95 @@
-/**
- * HTTP routes — REST endpoints under /api/capability-center/*.
- *
- * These are used by the Client half (browser) to fetch and mutate capability
- * state. The routes delegate to the CapabilityRegistry.
- */
-import type { CapabilityRegistry } from './core/capability/registry'
+/** HTTP routes exposed to the browser half. */
 import type { CapabilityCatalog } from './core/capability/catalog'
+import type { CapabilityRegistry } from './core/capability/registry'
 
 export interface RouteContext {
   registry: CapabilityRegistry
   catalog: CapabilityCatalog
 }
 
-/** Register all capability-center routes on the DSH webserver. */
+function sendJson(res: any, status: number, data: unknown): void {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify(data))
+}
+
+/** Register the /api/capability-center route family. */
 export function registerRoutes(ctx: any, routeContext: RouteContext): void {
-  const { registry, catalog } = routeContext
-  const router = ctx.get('dsh.webserver.router')
-  if (!router) return
+  const { registry } = routeContext
+  const webServer = ctx.webServer
+  if (!webServer) return
 
-  // GET /api/capability-center/list?type=&category=&search=
-  router.get('/api/capability-center/list', async (req: any) => {
-    const { type, category, search } = req.query || {}
-    const capabilities = await registry.list()
-    let result = capabilities
+  ctx.effect(
+    () =>
+      webServer.register({
+        kind: 'prefix',
+        path: '/api/capability-center',
+        handler: async (req: any, res: any) => {
+          const url = new URL(String(req.url), 'http://localhost')
+          const segments = url.pathname
+            .replace(/^\/api\/capability-center\/?/, '')
+            .split('/')
+            .filter(Boolean)
 
-    if (type) result = result.filter((c: any) => c.type === type)
-    if (category && category !== 'all')
-      result = result.filter((c: any) => c.category?.includes(category))
-    if (search) {
-      const q = search.toLowerCase()
-      result = result.filter(
-        (c: any) =>
-          c.name?.toLowerCase().includes(q) ||
-          c.description?.toLowerCase().includes(q),
-      )
-    }
+          try {
+            if (req.method === 'GET' && segments[0] === 'list') {
+              const type = url.searchParams.get('type')
+              const category = url.searchParams.get('category')
+              const search = url.searchParams.get('search')?.toLowerCase()
+              let result = await registry.list()
+              if (type) result = result.filter((cap) => cap.type === type)
+              if (category && category !== 'all') {
+                result = result.filter((cap) => cap.category?.includes(category))
+              }
+              if (search) {
+                result = result.filter((cap) =>
+                  cap.name.toLowerCase().includes(search) ||
+                  cap.description?.toLowerCase().includes(search) ||
+                  cap.tags?.some((tag) => tag.toLowerCase().includes(search)),
+                )
+              }
+              sendJson(res, 200, { capabilities: result })
+              return
+            }
 
-    return { capabilities: result }
-  })
+            const id = decodeURIComponent(segments[0] ?? '')
+            const action = segments[1]
+            if (!id) {
+              sendJson(res, 404, { error: 'not found' })
+              return
+            }
 
-  // GET /api/capability-center/:id
-  router.get('/api/capability-center/:id', async (req: any) => {
-    const capability = await registry.get(req.params.id)
-    return { capability }
-  })
+            if (req.method === 'GET' && !action) {
+              sendJson(res, 200, { capability: await registry.get(id) })
+              return
+            }
+            if (req.method === 'GET' && action === 'health') {
+              sendJson(res, 200, await registry.health(id))
+              return
+            }
 
-  // POST /api/capability-center/:id/install
-  router.post('/api/capability-center/:id/install', async (req: any) => {
-    await registry.install(req.params.id)
-    return { ok: true }
-  })
+            const mutations: Record<string, (id: string) => Promise<void>> = {
+              install: (value) => registry.install(value),
+              uninstall: (value) => registry.uninstall(value),
+              enable: (value) => registry.enable(value),
+              disable: (value) => registry.disable(value),
+              connect: (value) => registry.connect(value),
+              disconnect: (value) => registry.disconnect(value),
+            }
+            if (req.method === 'POST' && action && mutations[action]) {
+              await mutations[action](id)
+              sendJson(res, 200, { ok: true })
+              return
+            }
 
-  // POST /api/capability-center/:id/uninstall
-  router.post('/api/capability-center/:id/uninstall', async (req: any) => {
-    await registry.uninstall(req.params.id)
-    return { ok: true }
-  })
-
-  // POST /api/capability-center/:id/enable
-  router.post('/api/capability-center/:id/enable', async (req: any) => {
-    await registry.enable(req.params.id)
-    return { ok: true }
-  })
-
-  // POST /api/capability-center/:id/disable
-  router.post('/api/capability-center/:id/disable', async (req: any) => {
-    await registry.disable(req.params.id)
-    return { ok: true }
-  })
-
-  // POST /api/capability-center/:id/connect
-  router.post('/api/capability-center/:id/connect', async (req: any) => {
-    await registry.connect(req.params.id)
-    return { ok: true }
-  })
-
-  // POST /api/capability-center/:id/disconnect
-  router.post('/api/capability-center/:id/disconnect', async (req: any) => {
-    await registry.disconnect(req.params.id)
-    return { ok: true }
-  })
-
-  // GET /api/capability-center/:id/health
-  router.get('/api/capability-center/:id/health', async (req: any) => {
-    const health = await registry.health(req.params.id)
-    return health
-  })
+            sendJson(res, 404, { error: 'not found' })
+          } catch (error) {
+            sendJson(res, 500, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        },
+      }),
+    'capability-center: HTTP API',
+  )
 }

@@ -1,92 +1,136 @@
 /**
- * SkillAdapter — bridges the unified Capability model to DSH's native
- * ctx.skills system.
+ * SkillAdapter — projects DSH's layered Skill registry into Capability cards.
  *
- * DSH already has a complete Skill runtime:
- *   Provider → ctx.skills → Registry → Catalog → skill Tool
- *
- * This adapter does NOT re-implement the Skill runtime. It only:
- * 1. Reads skill metadata from ctx.skills.list() for display in Capability Center
- * 2. Maps SkillSummary → Capability
- * 3. Translates enable/disable to local state tracking (DSH skills are
- *    provider-discovered; there is no runtime enable/disable toggle, but
- *    we track user preference locally)
+ * Skills are scoped: a Host-root `skills.list()` only sees global providers.
+ * Capability Center resolves the default Agent preset's standing scope and
+ * passes it to `list({ scope })`, which merges global and preset layers.
  */
-import type { Capability } from '../capability/types'
 import type { SkillSummary } from '@deepseek-ai/dsh-skill'
+import type { Capability } from '../capability/types'
 
 export interface SkillAdapter {
-  /** Discover skills from ctx.skills and convert to Capability objects. */
   discover(): Promise<Capability[]>
-
-  /** Enable a skill in ctx.skills. */
   enable(cap: Capability): Promise<void>
-
-  /** Disable a skill in ctx.skills. */
   disable(cap: Capability): Promise<void>
-
-  /** Install a skill (e.g. from a remote provider). */
   install(cap: Capability): Promise<void>
-
-  /** Uninstall a skill. */
   uninstall(cap: Capability): Promise<void>
 }
 
-/** Map a DSH SkillSummary to a Capability object. */
+type ScopeResolver = () => Promise<object | undefined>
+
+const LARK_SOURCE_URL =
+  'https://open.larksuite.com/document/mcp_open_tools/feishu-cli-let-ai-actually-do-your-work-in-feishu'
+const DSH_SOURCE_URL = 'https://github.com/deepseek-ai/deepseek-harness'
+
+/** Infer a stable user-facing category from canonical Skill metadata. */
+export function classifySkill(skill: SkillSummary): string[] {
+  const text = [skill.name, skill.description, skill.whenToUse, skill.provider, skill.source]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  const categories: string[] = []
+  const add = (category: string) => {
+    if (!categories.includes(category)) categories.push(category)
+  }
+
+  if (/lark|feishu|飞书|mail|email|calendar|contact|task|doc|wiki|office/.test(text)) add('办公')
+  if (/code|coding|github|git|plugin|cordis|dsh|developer|architecture|frontend|backend|api/.test(text)) add('开发')
+  if (/research|paper|论文|调研|academic|literature|search/.test(text)) add('研究')
+  if (/sheet|excel|csv|data|analysis|analytics|chart|统计|数据/.test(text)) add('数据')
+  if (/image|design|slide|ppt|video|audio|content|creative|markdown|画板|创作/.test(text)) add('内容创作')
+  if (/workflow|automation|productivity|utility|tool|效率|自动化/.test(text)) add('效率工具')
+  if (/featured|recommended|精选/.test(text)) add('精选')
+
+  if (categories.length === 0) add('其他')
+  return categories
+}
+
+function skillIcon(skill: SkillSummary, categories: string[]): string {
+  const name = skill.name.toLowerCase()
+  if (name.startsWith('lark-') || /feishu|飞书/.test(name)) return '🟦'
+  if (categories.includes('内容创作')) return '🎨'
+  if (categories.includes('数据')) return '📊'
+  if (categories.includes('研究')) return '📄'
+  if (categories.includes('开发')) return '🧩'
+  return '⚡'
+}
+
+function sourcePath(skill: SkillSummary): string {
+  const base = skill.resourceBase
+  if (base?.kind === 'directory') return base.path
+  if (base?.kind === 'url') return base.url
+  if (base?.kind === 'opaque') return base.description
+  return `ctx.skills · ${skill.source}`
+}
+
+function sourceUrl(skill: SkillSummary): string {
+  if (skill.resourceBase?.kind === 'url') return skill.resourceBase.url
+  if (skill.name.toLowerCase().startsWith('lark-')) return LARK_SOURCE_URL
+  return DSH_SOURCE_URL
+}
+
 function skillToCapability(skill: SkillSummary): Capability {
+  const category = classifySkill(skill)
   return {
     id: skill.name,
     type: 'skill',
     name: skill.name,
-    description: skill.description,
-    icon: '📄',
-    category: ['研究'],
-    tags: [skill.name],
-    source: 'DSH ctx.skills',
-    sourcePath: 'ctx.skills → Skill Registry',
-    sourceUrl: 'https://github.com/deepseek-ai/deepseek-harness',
-    status: skill.invocation.modelInvocable ? 'installed' : 'disabled',
+    description: skill.description || skill.whenToUse || 'DSH Skill',
+    icon: skillIcon(skill, category),
+    category,
+    tags: [skill.name, skill.provider, skill.source, ...category],
+    source: `${skill.provider} · ${skill.source}`,
+    sourcePath: sourcePath(skill),
+    sourceUrl: sourceUrl(skill),
+    status: skill.invocation.userInvocable ? 'installed' : 'disabled',
     capabilities: skill.whenToUse ? [skill.whenToUse] : [],
     provider: { name: skill.provider },
   }
 }
 
-/**
- * Concrete SkillAdapter that talks to ctx.skills.
- * The actual ctx.skills service (SkillRegistry) is injected at plugin apply time.
- */
 export class DefaultSkillAdapter implements SkillAdapter {
-  /** Locally disabled skills — DSH has no runtime disable, so we track it. */
   private disabledSet = new Set<string>()
 
-  constructor(private skillsService?: any) {}
+  constructor(
+    private skillsService?: any,
+    private resolveScope?: ScopeResolver,
+  ) {}
 
   async discover(): Promise<Capability[]> {
     if (!this.skillsService?.list) return []
 
-    const summaries: SkillSummary[] = await this.skillsService.list()
-    return summaries.map((s) => {
-      const cap = skillToCapability(s)
-      // Override status if locally disabled
-      if (this.disabledSet.has(s.name)) {
-        cap.status = 'disabled'
-      }
-      return cap
-    })
+    let scope: object | undefined
+    try {
+      scope = await this.resolveScope?.()
+    } catch {
+      // Fall back to the global layer if the configured preset cannot mount.
+    }
+
+    const summaries: SkillSummary[] = await this.skillsService.list(
+      scope ? { scope } : {},
+    )
+    const seen = new Set<string>()
+    const result: Capability[] = []
+    for (const summary of summaries) {
+      if (!summary?.name || seen.has(summary.name)) continue
+      seen.add(summary.name)
+      const cap = skillToCapability(summary)
+      if (this.disabledSet.has(summary.name)) cap.status = 'disabled'
+      result.push(cap)
+    }
+    return result
   }
 
   async enable(cap: Capability): Promise<void> {
-    // DSH skills are provider-discovered; "enable" just clears local disable.
     this.disabledSet.delete(cap.id)
   }
 
   async disable(cap: Capability): Promise<void> {
-    // DSH skills are provider-discovered; "disable" is a local preference.
     this.disabledSet.add(cap.id)
   }
 
   async install(cap: Capability): Promise<void> {
-    // Runtime skill registration via ctx.skills.register()
     if (!this.skillsService?.register) {
       throw new Error('ctx.skills.register is not available')
     }
@@ -98,9 +142,6 @@ export class DefaultSkillAdapter implements SkillAdapter {
   }
 
   async uninstall(cap: Capability): Promise<void> {
-    // DSH has no unregister API for provider-discovered skills.
-    // For runtime-registered skills, the disposer returned by register() handles cleanup.
-    // We just clear local state.
     this.disabledSet.delete(cap.id)
   }
 }

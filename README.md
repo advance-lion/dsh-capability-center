@@ -11,6 +11,8 @@
 - **安全凭据隔离** — Agent 永远拿不到原始 Token，只拿到 `credential://feishu/default` 引用
 - **来源链接追踪** — 每个能力标注 `sourceUrl`，Agent 可据此查找更新
 - **松耦合扩展** — Partner、Marketplace、第三方能力通过 Provider 接口接入
+- **作用域感知发现** — 自动读取默认 Agent 预设作用域中的系统、用户和预设 Skill
+- **自动分类** — 新安装 Skill 根据名称、描述、来源和用途自动归入办公、开发、研究、数据、内容创作、效率工具或其他
 
 ## 能力模型
 
@@ -31,7 +33,7 @@
 
 入口位于 **对话栏左侧、新对话按钮正下方**，与 Codex / 豆包工作等产品一致。
 
-通过 DSH 的 `main` keyed-slot 注册，sidebar panellist 自动发现并渲染入口图标。
+插件显式注册 `sidebar.panellist` 入口和同名的 `main` keyed-slot 页面；点击入口后在中央工作区打开能力中心。
 
 ## 技术栈
 
@@ -54,8 +56,8 @@
 ```
 src/
 ├── index.ts                          # Host 入口（Cordis 插件）
-├── protocol.ts                       # Host ↔ Client RPC 协议
-├── routes.ts                         # HTTP 路由 /api/capability-center/*
+├── protocol.ts                       # Host ↔ Client 数据类型
+├── routes.ts                         # 同源 HTTP API /api/capability-center/*
 ├── core/
 │   ├── capability/
 │   │   ├── types.ts                  # Capability 统一类型定义
@@ -73,10 +75,10 @@ src/
 │   └── lark/
 │       └── manifest.json             # 飞书 Connector Manifest
 └── client/
-    ├── index.ts                      # Client 入口（注册 main panel）
+    ├── index.ts                      # Client 入口（注册 sidebar + main panel）
     ├── capability-center.tsx         # 主面板 UI
-    ├── capability-center.module.css  # 样式
-    ├── api.ts                        # Client → Host RPC 调用
+    ├── capability-center.module.css  # 主题自适应样式
+    ├── api.ts                        # Client → Host 同源 HTTP API
     ├── locales.ts                    # i18n（zh / en）
     └── css-modules.d.ts              # CSS Module 类型声明
 ```
@@ -93,15 +95,26 @@ pnpm test             # 运行测试
 
 ## 安装到 DSH
 
-```bash
-# 在 DSH 配置目录创建 symlink
-ln -s /path/to/dsh-capability-center ~/.dsh/node_modules/@wanganxin/dsh-capability-center
+发布后将包加入目标 Web profile 的依赖与 bundle 列表：
 
-# 在 ~/.dsh/cordis.patch.yml 中启用
-# - insert:
-#     - id: ui-capability-center
-#       name: '@wanganxin/dsh-capability-center'
+```json
+{
+  "dependencies": {
+    "@wanganxin/dsh-capability-center": "^0.1.0"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@wanganxin/dsh-capability-center"
+      ]
+    }
+  }
+}
 ```
+
+然后在 profile 目录执行 `pnpm install` 并重启 DSH。源码开发时可将依赖版本替换为 `link:/absolute/path/to/dsh-capability-center`。
 
 ## MVP 范围
 

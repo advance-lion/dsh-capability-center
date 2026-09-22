@@ -32,20 +32,34 @@ export class CapabilityRegistry {
     private imAdapter?: IMRecommendationAdapter,
   ) {}
 
-  /** List all capabilities with their current local status merged in. */
+  /**
+   * List catalog entries plus capabilities discovered from the live DSH
+   * Skill/MCP registries. A discovered entry wins over a catalog placeholder
+   * with the same id, so installed state and runtime metadata stay truthful.
+   */
   async list(): Promise<Capability[]> {
-    const caps = await this.catalog.list()
-    return caps.map((c) => ({
-      ...c,
-      status: this.statusMap.get(c.id) ?? c.status,
+    const [catalogCaps, skillCaps, mcpCaps, imCap] = await Promise.all([
+      this.catalog.list(),
+      this.skillAdapter?.discover().catch(() => []) ?? Promise.resolve([]),
+      this.mcpAdapter?.discover().catch(() => []) ?? Promise.resolve([]),
+      this.imAdapter?.getRecommendation().catch(() => undefined),
+    ])
+
+    const merged = new Map<string, Capability>()
+    for (const cap of catalogCaps) merged.set(cap.id, cap)
+    for (const cap of skillCaps) merged.set(cap.id, cap)
+    for (const cap of mcpCaps) merged.set(cap.id, cap)
+    if (imCap) merged.set(imCap.id, imCap)
+
+    return [...merged.values()].map((cap) => ({
+      ...cap,
+      status: this.statusMap.get(cap.id) ?? cap.status,
     }))
   }
 
-  /** Get a single capability with live status. */
+  /** Get a single capability with live status, including discovered entries. */
   async get(id: string): Promise<Capability | null> {
-    const cap = await this.catalog.get(id)
-    if (!cap) return null
-    return { ...cap, status: this.statusMap.get(id) ?? cap.status }
+    return (await this.list()).find((cap) => cap.id === id) ?? null
   }
 
   /** Install a capability. Dispatches to the right adapter. */

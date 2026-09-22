@@ -1,82 +1,83 @@
-/**
- * Client-side API — calls the Host half via host.call() RPC.
- *
- * The Client never touches the filesystem or the network directly.
- * All capability operations go through the Host, which delegates to
- * the appropriate adapter (SkillAdapter, MCPAdapter, CLIAdapter).
- */
+/** Browser-side same-origin API for the publishable static plugin. */
 import type { Capability } from '../core/capability/types'
 
-/** List capabilities with optional filter. */
-export async function listCapabilities(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  filter?: { type?: string; category?: string; search?: string },
-): Promise<Capability[]> {
-  const res = await host.call('capability.list', filter ?? {})
-  return res.capabilities ?? []
+const API_ROOT = '/api/capability-center'
+
+export class CapabilityApiError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CapabilityApiError'
+  }
 }
 
-/** Get a single capability by ID. */
-export async function getCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<Capability | null> {
-  const res = await host.call('capability.get', { id })
-  return res.capability ?? null
+async function readJson<T>(response: Response): Promise<T> {
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new CapabilityApiError(`HTTP ${response.status}: invalid JSON response`)
+  }
+  if (!response.ok) {
+    const message =
+      typeof body === 'object' && body !== null &&
+      typeof (body as { error?: unknown }).error === 'string'
+        ? (body as { error: string }).error
+        : `HTTP ${response.status}`
+    throw new CapabilityApiError(message)
+  }
+  return body as T
 }
 
-/** Install a capability. */
-export async function installCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.install', { id })
+async function get<T>(path: string): Promise<T> {
+  return readJson<T>(await fetch(path, { credentials: 'same-origin' }))
 }
 
-/** Uninstall a capability. */
-export async function uninstallCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.uninstall', { id })
+async function post<T>(path: string): Promise<T> {
+  return readJson<T>(await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+  }))
 }
 
-/** Enable a capability. */
-export async function enableCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.enable', { id })
+export async function listCapabilities(): Promise<Capability[]> {
+  const body = await get<{ capabilities: Capability[] }>(`${API_ROOT}/list`)
+  return body.capabilities ?? []
 }
 
-/** Disable a capability. */
-export async function disableCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.disable', { id })
+export async function getCapability(id: string): Promise<Capability | null> {
+  const body = await get<{ capability: Capability | null }>(
+    `${API_ROOT}/${encodeURIComponent(id)}`,
+  )
+  return body.capability ?? null
 }
 
-/** Connect a connector. */
-export async function connectCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.connect', { id })
+export async function installCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/install`)
 }
 
-/** Disconnect a connector. */
-export async function disconnectCapability(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-): Promise<void> {
-  await host.call('capability.disconnect', { id })
+export async function uninstallCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/uninstall`)
 }
 
-/** Health check. */
+export async function enableCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/enable`)
+}
+
+export async function disableCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/disable`)
+}
+
+export async function connectCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/connect`)
+}
+
+export async function disconnectCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/disconnect`)
+}
+
 export async function checkHealth(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
   id: string,
 ): Promise<{ healthy: boolean; message?: string }> {
-  return await host.call('capability.health', { id })
+  return get(`${API_ROOT}/${encodeURIComponent(id)}/health`)
 }

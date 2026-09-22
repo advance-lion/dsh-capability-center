@@ -1,50 +1,32 @@
-/**
- * CapabilityCenterPanel — the main panel component rendered in the DSH
- * central column when the user selects "能力中心" from the sidebar.
- *
- * Fetches capabilities from the Host via host.call() RPC and renders
- * the tabbed, searchable, categorized card grid.
- */
-import { useState, useEffect, useCallback } from 'react'
+/** Capability Center main-panel UI. */
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Capability, CapabilityType } from '../core/capability/types'
 import {
-  listCapabilities,
-  installCapability,
-  enableCapability,
-  disableCapability,
   connectCapability,
+  disableCapability,
   disconnectCapability,
+  enableCapability,
+  installCapability,
+  listCapabilities,
 } from './api.ts'
 import type { CapabilityCenterKey } from './locales.ts'
 import * as s from './capability-center.module.css'
 
-/** Props injected by the slot system. */
 interface PanelProps {
   t: (key: CapabilityCenterKey) => string
-  host: { call: (method: string, args?: unknown) => Promise<any> }
 }
 
-const CATEGORIES = [
-  'categoryAll',
-  'categoryFeatured',
-  'categoryOffice',
-  'categoryDev',
-  'categoryResearch',
-  'categoryData',
-  'categoryContent',
-  'categoryTools',
+const CATEGORY_KEYS = [
+  ['all', 'categoryAll'],
+  ['精选', 'categoryFeatured'],
+  ['办公', 'categoryOffice'],
+  ['开发', 'categoryDev'],
+  ['研究', 'categoryResearch'],
+  ['数据', 'categoryData'],
+  ['内容创作', 'categoryContent'],
+  ['效率工具', 'categoryTools'],
+  ['其他', 'categoryOther'],
 ] as const
-
-const CATEGORY_VALUES: Record<string, string> = {
-  categoryAll: 'all',
-  categoryFeatured: '精选',
-  categoryOffice: '办公',
-  categoryDev: '开发',
-  categoryResearch: '研究',
-  categoryData: '数据',
-  categoryContent: '内容创作',
-  categoryTools: '效率工具',
-}
 
 const TYPE_LABELS: Record<CapabilityType, CapabilityCenterKey> = {
   skill: 'tabSkill',
@@ -61,379 +43,282 @@ const STATUS_LABELS: Record<string, CapabilityCenterKey> = {
   error: 'statusError',
 }
 
-export function CapabilityCenterPanel({ t, host }: PanelProps) {
-  const [capabilities, setCapabilities] = useState<Capability[]>([])
-  const [loading, setLoading] = useState(true)
+export function CapabilityCenterPanel({ t }: PanelProps) {
+  const [capabilities, setCapabilities] = useState<Capability[] | null>(null)
+  const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<'all' | CapabilityType>('all')
   const [activeCategory, setActiveCategory] = useState('all')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Capability | null>(null)
 
   const refresh = useCallback(async () => {
-    setLoading(true)
+    setError('')
     try {
-      const caps = await listCapabilities(host)
-      setCapabilities(caps)
-    } catch (e) {
-      console.error('[capability-center] failed to list:', e)
-    } finally {
-      setLoading(false)
+      setCapabilities(await listCapabilities())
+    } catch (cause) {
+      console.error('[capability-center] discovery failed:', cause)
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setCapabilities([])
     }
-  }, [host])
+  }, [])
 
   useEffect(() => {
-    refresh()
+    void refresh()
   }, [refresh])
 
-  const filtered = capabilities.filter((cap) => {
+  const filtered = useMemo(() => (capabilities ?? []).filter((cap) => {
     if (activeTab !== 'all' && cap.type !== activeTab) return false
-    if (activeCategory !== 'all' && !cap.category?.includes(activeCategory))
-      return false
-    if (search) {
-      const q = search.toLowerCase()
-      if (
-        !cap.name.toLowerCase().includes(q) &&
-        !cap.description?.toLowerCase().includes(q)
-      )
-        return false
-    }
-    return true
-  })
+    if (activeCategory !== 'all' && !cap.category?.includes(activeCategory)) return false
+    const query = search.trim().toLowerCase()
+    if (!query) return true
+    return [cap.name, cap.description, cap.source, ...(cap.tags ?? [])]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query))
+  }), [capabilities, activeTab, activeCategory, search])
 
-  const counts = {
-    all: capabilities.length,
-    skill: capabilities.filter((c) => c.type === 'skill').length,
-    connector: capabilities.filter((c) => c.type === 'connector').length,
-    partner: capabilities.filter((c) => c.type === 'partner').length,
-  }
+  const counts = useMemo(() => ({
+    all: capabilities?.length ?? 0,
+    skill: capabilities?.filter((cap) => cap.type === 'skill').length ?? 0,
+    connector: capabilities?.filter((cap) => cap.type === 'connector').length ?? 0,
+    partner: capabilities?.filter((cap) => cap.type === 'partner').length ?? 0,
+  }), [capabilities])
+
+  const ready = capabilities?.filter((cap) =>
+    cap.status === 'installed' || cap.status === 'connected',
+  ).length ?? 0
 
   return (
-    <div className={s.root}>
-      {/* Header */}
-      <div className={s.header}>
-        <h1 className={s.title}>{t('title')}</h1>
-        <input
-          className={s.search}
-          placeholder={t('search')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </div>
+    <main className={s.root}>
+      <div className={s.content}>
+        <section className={s.hero}>
+          <div>
+            <div className={s.eyebrow}>DSH Capability Center</div>
+            <h1 className={s.title}>{t('title')}</h1>
+            <div className={s.subtitle}>{t('subtitle')}</div>
+          </div>
+          <div className={s.stats}>
+            <Stat value={counts.all} label={t('allCapabilities')} />
+            <Stat value={ready} label={t('readyCapabilities')} />
+          </div>
+        </section>
 
-      {/* Tabs */}
-      <div className={s.tabs}>
-        {(['all', 'skill', 'connector', 'partner'] as const).map((tab) => (
-          <button
-            key={tab}
-            className={tab === activeTab ? s.tabActive : s.tab}
-            onClick={() => setActiveTab(tab)}
-          >
-            {t(TYPE_LABELS[tab as CapabilityType] ?? ('tabAll' as CapabilityCenterKey))}
-            <span className={s.tabCount}>({counts[tab as keyof typeof counts]})</span>
-          </button>
-        ))}
-      </div>
-
-      {/* Categories */}
-      <div className={s.categories}>
-        {CATEGORIES.map((catKey) => {
-          const catValue = CATEGORY_VALUES[catKey]
-          return (
-            <button
-              key={catKey}
-              className={catValue === activeCategory ? s.catActive : s.cat}
-              onClick={() => setActiveCategory(catValue)}
-            >
-              {t(catKey as CapabilityCenterKey)}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Grid */}
-      {loading ? (
-        <div className={s.empty}>Loading…</div>
-      ) : filtered.length === 0 ? (
-        <div className={s.empty}>{t('noResults')}</div>
-      ) : (
-        <div className={s.grid}>
-          {filtered.map((cap) => (
-            <CapabilityCard
-              key={cap.id}
-              cap={cap}
-              t={t}
-              onClick={() => setSelected(cap)}
-              onAction={(action) => handleAction(host, cap.id, action, refresh)}
+        <div className={s.toolbar}>
+          <div className={s.tabs}>
+            {(['all', 'skill', 'connector', 'partner'] as const).map((tab) => (
+              <button
+                key={tab}
+                className={tab === activeTab ? s.tabActive : s.tab}
+                onClick={() => setActiveTab(tab)}
+              >
+                {t(tab === 'all' ? 'tabAll' : TYPE_LABELS[tab])}
+                <span className={s.tabCount}>{counts[tab]}</span>
+              </button>
+            ))}
+          </div>
+          <div className={s.searchRow}>
+            <input
+              className={s.search}
+              placeholder={t('search')}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
             />
+            <button className={s.refresh} onClick={() => void refresh()} title={t('refresh')}>
+              ↻
+            </button>
+          </div>
+        </div>
+
+        <div className={s.categories}>
+          {CATEGORY_KEYS.map(([value, key]) => (
+            <button
+              key={value}
+              className={value === activeCategory ? s.catActive : s.cat}
+              onClick={() => setActiveCategory(value)}
+            >
+              {t(key)}
+            </button>
           ))}
         </div>
-      )}
 
-      {/* Detail overlay */}
-      {selected && (
-        <CapabilityDetail
-          cap={selected}
-          t={t}
-          onClose={() => setSelected(null)}
-          onAction={(action) => {
-            handleAction(host, selected.id, action, refresh)
-            setSelected(null)
-          }}
-        />
-      )}
-    </div>
+        {capabilities === null ? (
+          <div className={s.loading}><span className={s.spinner} />{t('loading')}</div>
+        ) : error ? (
+          <div className={s.empty}>{t('loadError')}: {error}</div>
+        ) : filtered.length === 0 ? (
+          <div className={s.empty}>{t('noResults')}</div>
+        ) : (
+          <div className={s.grid}>
+            {filtered.map((cap) => (
+              <CapabilityCard
+                key={`${cap.type}:${cap.id}`}
+                cap={cap}
+                t={t}
+                onClick={() => setSelected(cap)}
+                onAction={(action) => void handleAction(cap.id, action, refresh)}
+              />
+            ))}
+          </div>
+        )}
+
+        {selected && (
+          <CapabilityDetail
+            cap={selected}
+            t={t}
+            onClose={() => setSelected(null)}
+          />
+        )}
+      </div>
+    </main>
   )
 }
 
-// ===== Card =====
-interface CardProps {
+function Stat({ value, label }: { value: number; label: string }) {
+  return <div className={s.stat}><strong>{value}</strong><span>{label}</span></div>
+}
+
+function CapabilityCard({ cap, t, onClick, onAction }: {
   cap: Capability
   t: (key: CapabilityCenterKey) => string
   onClick: () => void
   onAction: (action: string) => void
-}
-
-function CapabilityCard({ cap, t, onClick, onAction }: CardProps) {
-  const actionBtn = getCardAction(cap, t)
+}) {
+  const action = getCardAction(cap, t)
   return (
-    <div className={s.card} onClick={onClick}>
+    <article className={s.card} onClick={onClick}>
       <div className={s.cardTop}>
-        <div className={s.cardIcon}>{cap.icon}</div>
+        <div className={s.cardIcon}>{cap.icon ?? '⚡'}</div>
         <div className={s.cardInfo}>
-          <div className={s.cardName}>{cap.name}</div>
+          <div className={s.nameRow}>
+            <div className={s.cardName}>{cap.name}</div>
+            <span className={s.badgeType}>{t(TYPE_LABELS[cap.type])}</span>
+          </div>
           <div className={s.cardDesc}>{cap.description}</div>
         </div>
       </div>
-      <div className={s.cardBadges}>
-        <span className={s.badgeType}>{t(TYPE_LABELS[cap.type])}</span>
-        {cap.transport && (
-          <span className={s.badgeTransport}>{cap.transport.toUpperCase()}</span>
-        )}
-        {cap.source && (
-          <span className={s.badgeSource}>
-            {t('source')}: {cap.source}
-          </span>
-        )}
+      <div className={s.cardMeta}>
+        {cap.transport && <span className={s.badgeTransport}>{cap.transport.toUpperCase()}</span>}
+        {cap.sourceUrl ? (
+          <a
+            className={s.sourceLink}
+            href={cap.sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            title={cap.sourceUrl}
+          >
+            ↗ {cap.source ?? domain(cap.sourceUrl)} · {domain(cap.sourceUrl)}
+          </a>
+        ) : <span className={s.sourceLink}>{cap.source}</span>}
       </div>
-      {cap.sourceUrl && (
-        <a
-          className={s.sourceLink}
-          href={cap.sourceUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          title={cap.sourceUrl}
-        >
-          🔗 {cap.sourceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}
-        </a>
-      )}
       <div className={s.cardBottom}>
         <div className={s.status}>
           <span className={`${s.statusDot} ${s['status_' + cap.status]}`} />
           {t(STATUS_LABELS[cap.status] ?? 'statusAvailable')}
         </div>
-        {actionBtn && (
+        {action && (
           <button
-            className={actionBtn.primary ? s.btnPrimary : s.btnSecondary}
-            onClick={(e) => {
-              e.stopPropagation()
-              onAction(actionBtn.action)
+            className={action.primary ? s.btnPrimary : s.btnSecondary}
+            onClick={(event) => {
+              event.stopPropagation()
+              onAction(action.action)
             }}
           >
-            {actionBtn.label}
+            {action.label}
           </button>
         )}
       </div>
-    </div>
+    </article>
   )
 }
 
-// ===== Detail =====
-interface DetailProps {
+function CapabilityDetail({ cap, t, onClose }: {
   cap: Capability
   t: (key: CapabilityCenterKey) => string
   onClose: () => void
-  onAction: (action: string) => void
-}
-
-function CapabilityDetail({ cap, t, onClose, onAction }: DetailProps) {
-  const actionBtns = getDetailActions(cap, t)
+}) {
   return (
     <div className={s.overlay} onClick={onClose}>
-      <div className={s.detail} onClick={(e) => e.stopPropagation()}>
-        <div className={s.detailHeader}>
-          <div className={s.detailIcon}>{cap.icon}</div>
+      <section className={s.detail} onClick={(event) => event.stopPropagation()}>
+        <header className={s.detailHeader}>
+          <div className={s.detailIcon}>{cap.icon ?? '⚡'}</div>
           <div className={s.detailInfo}>
             <div className={s.detailName}>{cap.name}</div>
             <div className={s.detailDesc}>{cap.description}</div>
           </div>
-          <button className={s.closeBtn} onClick={onClose}>
-            ✕
-          </button>
-        </div>
+          <button className={s.closeBtn} onClick={onClose}>✕</button>
+        </header>
         <div className={s.detailBody}>
           <section className={s.detailSection}>
-            <h3 className={s.sectionTitle}>{t('type')} & {t('source')}</h3>
+            <h3 className={s.sectionTitle}>{t('capabilityInfo')}</h3>
             <div className={s.metaGrid}>
               <div className={s.metaLabel}>{t('type')}</div>
-              <div className={s.metaValue}>
-                <span className={s.badgeType}>{t(TYPE_LABELS[cap.type])}</span>
-                {cap.transport && (
-                  <span className={s.badgeTransport}>
-                    {cap.transport.toUpperCase()}
-                  </span>
-                )}
-              </div>
+              <div className={s.metaValue}>{t(TYPE_LABELS[cap.type])}</div>
               <div className={s.metaLabel}>{t('source')}</div>
               <div className={s.metaValue}>{cap.source}</div>
               <div className={s.metaLabel}>{t('path')}</div>
-              <div className={s.metaValue}>
-                <code>{cap.sourcePath}</code>
-              </div>
-              {cap.sourceUrl && (
-                <>
-                  <div className={s.metaLabel}>{t('sourceUrl')}</div>
-                  <div className={s.metaValue}>
-                    <a
-                      className={s.detailSourceLink}
-                      href={cap.sourceUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      🔗 {cap.sourceUrl}
-                    </a>
-                  </div>
-                </>
-              )}
+              <div className={s.metaValue}><code>{cap.sourcePath}</code></div>
+              <div className={s.metaLabel}>{t('status')}</div>
+              <div className={s.metaValue}>{t(STATUS_LABELS[cap.status] ?? 'statusAvailable')}</div>
+              {cap.sourceUrl && <>
+                <div className={s.metaLabel}>{t('sourceUrl')}</div>
+                <div className={s.metaValue}>
+                  <a className={s.detailSourceLink} href={cap.sourceUrl} target="_blank" rel="noopener noreferrer">
+                    {cap.sourceUrl} ↗
+                  </a>
+                </div>
+              </>}
             </div>
           </section>
-
-          {cap.capabilities && cap.capabilities.length > 0 && (
+          {!!cap.capabilities?.length && (
             <section className={s.detailSection}>
               <h3 className={s.sectionTitle}>{t('providedCapabilities')}</h3>
               <div className={s.capList}>
-                {cap.capabilities.map((c) => (
-                  <div key={c} className={s.capItem}>
-                    <span className={s.check}>✓</span>
-                    {c}
-                  </div>
-                ))}
+                {cap.capabilities.map((item) => <span key={item} className={s.capItem}>{item}</span>)}
               </div>
             </section>
           )}
-
-          <section className={s.detailSection}>
-            <h3 className={s.sectionTitle}>{t('status')}</h3>
-            <div className={s.status}>
-              <span className={`${s.statusDot} ${s['status_' + cap.status]}`} />
-              {t(STATUS_LABELS[cap.status] ?? 'statusAvailable')}
-            </div>
-          </section>
         </div>
-        {actionBtns.length > 0 && (
-          <div className={s.detailActions}>
-            {actionBtns.map((btn) => (
-              <button
-                key={btn.action}
-                className={btn.primary ? s.btnPrimary : s.btnSecondary}
-                onClick={() => onAction(btn.action)}
-              >
-                {btn.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      </section>
     </div>
   )
 }
 
-// ===== Helpers =====
-function getCardAction(
-  cap: Capability,
-  t: (key: CapabilityCenterKey) => string,
-): { action: string; label: string; primary: boolean } | null {
-  if (cap.type === 'partner') {
-    if (cap.status === 'available')
-      return { action: 'install', label: t('btnInstall'), primary: false }
-    return { action: 'launch', label: t('btnLaunch'), primary: true }
-  }
-  switch (cap.status) {
-    case 'connected':
-      return { action: 'configure', label: t('btnConfigure'), primary: false }
-    case 'installed':
-      return { action: 'disable', label: t('btnDisable'), primary: false }
-    case 'disabled':
-      return { action: 'enable', label: t('btnEnable'), primary: true }
-    case 'available':
-      return { action: 'install', label: t('btnInstall'), primary: true }
-    case 'expired':
-      return { action: 'reauth', label: t('btnReauth'), primary: true }
-    default:
-      return { action: 'configure', label: t('btnConfigure'), primary: false }
-  }
-}
-
-function getDetailActions(
-  cap: Capability,
-  t: (key: CapabilityCenterKey) => string,
-): { action: string; label: string; primary: boolean }[] {
-  if (cap.type === 'partner') {
-    if (cap.status === 'available')
-      return [{ action: 'install', label: t('btnInstall'), primary: false }]
-    return [
-      { action: 'launch', label: t('btnLaunch'), primary: true },
-      { action: 'configure', label: t('btnConfigure'), primary: false },
-    ]
-  }
-  switch (cap.status) {
-    case 'connected':
-      return [
-        { action: 'reauth', label: t('btnReauth'), primary: false },
-        { action: 'disconnect', label: t('btnDisconnect'), primary: false },
-      ]
-    case 'installed':
-      return [
-        { action: 'disable', label: t('btnDisable'), primary: false },
-        { action: 'configure', label: t('btnConfigure'), primary: false },
-      ]
-    case 'disabled':
-      return [{ action: 'enable', label: t('btnEnable'), primary: true }]
-    case 'available':
-      return [{ action: 'install', label: t('btnInstall'), primary: true }]
-    case 'expired':
-      return [{ action: 'reauth', label: t('btnReauth'), primary: true }]
-    default:
-      return [{ action: 'configure', label: t('btnConfigure'), primary: false }]
-  }
-}
-
-async function handleAction(
-  host: { call: (method: string, args?: unknown) => Promise<any> },
-  id: string,
-  action: string,
-  refresh: () => void,
-) {
+function domain(url: string): string {
   try {
-    switch (action) {
-      case 'install':
-        await installCapability(host, id)
-        break
-      case 'enable':
-        await enableCapability(host, id)
-        break
-      case 'disable':
-        await disableCapability(host, id)
-        break
-      case 'connect':
-        await connectCapability(host, id)
-        break
-      case 'disconnect':
-        await disconnectCapability(host, id)
-        break
-    }
-    refresh()
-  } catch (e) {
-    console.error('[capability-center] action failed:', e)
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+function getCardAction(cap: Capability, t: (key: CapabilityCenterKey) => string) {
+  if (cap.type === 'skill') {
+    return cap.status === 'disabled'
+      ? { action: 'enable', label: t('btnEnable'), primary: true }
+      : { action: 'configure', label: t('btnManage'), primary: false }
+  }
+  if (cap.id === 'lark-im') {
+    return { action: 'configure', label: cap.status === 'installed' ? t('btnOpenDshIm') : t('btnRecommendInstall'), primary: false }
+  }
+  if (cap.type === 'partner') return null
+  if (cap.status === 'connected') return { action: 'disconnect', label: t('btnDisconnect'), primary: false }
+  if (cap.status === 'installed') return { action: 'configure', label: t('btnManage'), primary: false }
+  if (cap.status === 'disabled') return { action: 'enable', label: t('btnEnable'), primary: true }
+  if (cap.transport === 'mcp' || cap.transport === 'cli') {
+    return { action: 'connect', label: t('btnConnect'), primary: true }
+  }
+  return null
+}
+
+async function handleAction(id: string, action: string, refresh: () => Promise<void>) {
+  try {
+    if (action === 'install') await installCapability(id)
+    if (action === 'enable') await enableCapability(id)
+    if (action === 'disable') await disableCapability(id)
+    if (action === 'connect') await connectCapability(id)
+    if (action === 'disconnect') await disconnectCapability(id)
+    await refresh()
+  } catch (error) {
+    console.error('[capability-center] action failed:', error)
   }
 }
