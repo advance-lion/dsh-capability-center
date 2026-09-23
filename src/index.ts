@@ -5,10 +5,16 @@
  * not hardcoded in source. The CLI adapter reads command templates
  * from manifests. The IM adapter detects the real dshIm service.
  *
+ * Caching: detection results are persisted to
+ * ~/.dsh/capability-center/cache.json and loaded on startup.
+ * list() returns cached data instantly; background refresh keeps it fresh.
+ *
  * The UI (client half) is unchanged — it uses the original Capability[]
  * API format. Only the backend logic has been upgraded.
  */
 import { Context } from '@deepseek-ai/cordis'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Capability } from './core/capability/types'
 import { CapabilityCatalog } from './core/capability/catalog'
 import { CapabilityRegistry } from './core/capability/registry'
@@ -20,8 +26,6 @@ import { DefaultIMRecommendationAdapter } from './core/adapters/im-recommendatio
 import { registerRoutes } from './routes'
 
 // ===== Connector manifest data (data-driven, not hardcoded) =====
-// Each connector's commands are declared here as data, not in code.
-// Adding a new CLI connector = adding a new manifest object.
 const cliManifests: CliConnectorManifest[] = [
   {
     id: 'feishu',
@@ -78,6 +82,10 @@ export const name = 'dsh-capability-center'
 export const inject = ['webServer']
 
 export function apply(ctx: Context) {
+  // --- Cache file path ---
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const cacheFile = join(dshHome, 'capability-center', 'cache.json')
+
   // --- Create adapters ---
   const agentPresets = ctx.get('agentPresets') as
     | { standingKeyFor(id?: string): Promise<object> }
@@ -88,7 +96,6 @@ export function apply(ctx: Context) {
   )
   const mcpAdapter = new DefaultMCPAdapter(undefined, ctx)
   const cliAdapter = new DefaultCLIAdapter(ctx)
-  // Register CLI connector manifests (data-driven)
   cliAdapter.registerManifests(cliManifests)
   const imAdapter = new DefaultIMRecommendationAdapter(ctx)
 
@@ -119,14 +126,21 @@ export function apply(ctx: Context) {
   }
   catalog.registerProvider(officialProvider)
 
-  // --- Create registry ---
+  // --- Create registry with cache ---
   const registry = new CapabilityRegistry(
     catalog,
     skillAdapter,
     mcpAdapter,
     cliAdapter,
     imAdapter,
+    cacheFile,
   )
+
+  // --- Load cache on startup, then trigger background refresh ---
+  registry.loadCache().then(() => {
+    // First refresh in background — populates real status (CLI auth, skills, MCP)
+    registry.refreshInBackground().catch(() => {})
+  }).catch(() => {})
 
   // --- Register HTTP routes ---
   registerRoutes(ctx, { registry, catalog })
@@ -137,5 +151,5 @@ export function apply(ctx: Context) {
     'capability-center: MCP teardown',
   )
 
-  ctx.logger('dsh-capability-center').info('Capability Center host plugin loaded (V0.1 data-driven)')
+  ctx.logger('dsh-capability-center').info('Capability Center host plugin loaded (V0.1 cached)')
 }
