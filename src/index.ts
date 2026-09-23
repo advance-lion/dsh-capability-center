@@ -21,6 +21,8 @@ import { JsonRuntimeStore } from './core/runtime/json-store'
 import { ProviderRegistry } from './core/provider/registry'
 import { ConnectionAggregator } from './core/provider/aggregator'
 import { createDshImL0Provider } from './core/provider/adapters/dsh-im-l0'
+import { createSkillProvider } from './core/provider/adapters/skill-provider'
+import { createMcpProvider } from './core/provider/adapters/mcp-provider'
 
 // Recipe system
 import { ExecutorRegistry } from './core/recipe/executor-registry'
@@ -37,15 +39,19 @@ import { registerRoutes } from './routes'
 // Connector manifests (loaded at build time via resolveJsonModule)
 import feishuManifest from './connectors/feishu/manifest.json'
 import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
+import githubManifest from './connectors/github/manifest.json'
+import githubRecipe from './connectors/github/github-pat.recipe.json'
 
 // ===== Manifest registry =====
 const manifests: ConnectorManifest[] = [
   feishuManifest as unknown as ConnectorManifest,
+  githubManifest as unknown as ConnectorManifest,
 ]
 
 // ===== Recipe registry =====
 const recipes: unknown[] = [
   feishuRecipe,
+  githubRecipe,
 ]
 
 // ===== Plugin Definition =====
@@ -77,6 +83,16 @@ export function apply(ctx: Context) {
     logger.warn(`Failed to load runtime store: ${err}`)
   })
 
+  // --- Create adapters for skill/MCP discovery ---
+  const agentPresets = ctx.get('agentPresets') as
+    | { standingKeyFor(id?: string): Promise<object> }
+    | undefined
+  const skillAdapter = new DefaultSkillAdapter(
+    ctx.get('skills'),
+    agentPresets ? () => agentPresets.standingKeyFor() : undefined,
+  )
+  const mcpAdapter = new DefaultMCPAdapter(undefined, ctx)
+
   // --- Create provider registry ---
   const providerRegistry = new ProviderRegistry()
 
@@ -93,22 +109,24 @@ export function apply(ctx: Context) {
     })
   }
 
+  // Register skill provider (discovers DSH skills)
+  const skillProvider = createSkillProvider(skillAdapter)
+  providerRegistry.register(skillProvider).catch((err) => {
+    logger.warn(`Failed to register skill provider: ${err}`)
+  })
+
+  // Register MCP provider (discovers MCP servers from ~/.dsh/mcp.json)
+  const mcpProvider = createMcpProvider(mcpAdapter)
+  providerRegistry.register(mcpProvider).catch((err) => {
+    logger.warn(`Failed to register MCP provider: ${err}`)
+  })
+
   // --- Create aggregator ---
   const aggregator = new ConnectionAggregator(catalogStore, runtimeStore, providerRegistry)
 
   // --- Create executor registry ---
   const executorRegistry = new ExecutorRegistry()
   registerBuiltinExecutors(executorRegistry)
-
-  // --- Keep existing adapters for skill/MCP discovery ---
-  const agentPresets = ctx.get('agentPresets') as
-    | { standingKeyFor(id?: string): Promise<object> }
-    | undefined
-  const skillAdapter = new DefaultSkillAdapter(
-    ctx.get('skills'),
-    agentPresets ? () => agentPresets.standingKeyFor() : undefined,
-  )
-  const mcpAdapter = new DefaultMCPAdapter(undefined, ctx)
 
   // --- Register HTTP routes (hardened) ---
   registerRoutes(ctx, {

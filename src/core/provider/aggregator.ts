@@ -45,15 +45,73 @@ export class ConnectionAggregator {
   /**
    * Build the full unified view for the UI.
    * Merges catalog methods, runtime instances, and provider connections.
+   * Also queries providers for dynamically discovered methods (skills, MCP).
    */
   async listViews(): Promise<IntegrationView[]> {
+    // Start with catalog integrations (from manifests)
     const integrations = await this.catalog.listIntegrations()
     const allMethods = await this.catalog.listMethods()
+
+    // Also collect provider-discovered methods (skills, MCP servers)
+    const providerIntegrations: Integration[] = []
+    const providerMethods: ConnectionMethod[] = []
+    const providerList = await this.providers.listAll()
+
+    for (const { provider, descriptor } of providerList) {
+      try {
+        const methods = await provider.listMethods()
+        for (const method of methods) {
+          // Skip if this method is already in the catalog
+          if (allMethods.some((m) => m.id === method.id)) continue
+
+          // Create a virtual integration for this provider's method
+          const integration: Integration = {
+            id: method.integrationId,
+            name: descriptor.name,
+            description: `${descriptor.name} — ${method.name}`,
+            icon: method.transport === 'skill' ? '⚡' : method.transport === 'mcp' ? '🔌' : '🔗',
+            categories: ['其他'],
+            status: 'active',
+          }
+
+          // Don't duplicate integrations
+          if (!integrations.some((i) => i.id === integration.id) &&
+              !providerIntegrations.some((i) => i.id === integration.id)) {
+            providerIntegrations.push(integration)
+          }
+
+          // Create a ConnectionMethod from the provider's method descriptor
+          const cm: ConnectionMethod = {
+            id: method.id,
+            integrationId: method.integrationId,
+            name: method.name,
+            transport: method.transport,
+            identityType: method.identityType,
+            ownerKind: 'provider',
+            ownerRef: descriptor.id,
+            sourceLevel: 'community',
+            officialSources: [],
+            capabilities: method.capabilities,
+            recommendedPriority: 99,
+            supportedPlatforms: ['win32', 'darwin', 'linux'],
+            accountCardinality: method.accountCardinality,
+            status: 'active',
+          }
+          providerMethods.push(cm)
+        }
+      } catch {
+        // Provider unavailable — skip
+      }
+    }
+
+    // Merge catalog + provider-discovered
+    const allIntegrations = [...integrations, ...providerIntegrations]
+    const allMergedMethods = [...allMethods, ...providerMethods]
     const allInstances = await this.runtime.listInstances()
 
     // Group methods by integration
     const methodsByIntegration = new Map<string, ConnectionMethod[]>()
-    for (const method of allMethods) {
+    for (const method of allMergedMethods) {
       const list = methodsByIntegration.get(method.integrationId) || []
       list.push(method)
       methodsByIntegration.set(method.integrationId, list)
@@ -72,7 +130,7 @@ export class ConnectionAggregator {
 
     const views: IntegrationView[] = []
 
-    for (const integration of integrations) {
+    for (const integration of allIntegrations) {
       const methods = methodsByIntegration.get(integration.id) || []
       const methodViews: MethodView[] = []
 

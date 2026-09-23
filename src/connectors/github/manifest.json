@@ -1,0 +1,74 @@
+{
+  "integration": {
+    "id": "github",
+    "name": "GitHub",
+    "vendor": "GitHub Inc.",
+    "description": "GitHub 仓库、Issue、Pull Request、Actions 等开发协作能力",
+    "icon": "🐙",
+    "homepageUrl": "https://github.com",
+    "categories": ["开发", "精选"],
+    "status": "active"
+  },
+  "methods": [
+    {
+      "id": "github-pat",
+      "name": "GitHub Personal Access Token",
+      "transport": "api",
+      "identityType": "user",
+      "ownerKind": "recipe",
+      "ownerRef": "github-pat",
+      "sourceLevel": "official-open-source",
+      "officialSources": [
+        {
+          "title": "GitHub Personal Access Tokens 文档",
+          "url": "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+          "sourceType": "official-doc",
+          "verifiedAt": "2026-09-16"
+        }
+      ],
+      "capabilities": [
+        "repo.search",
+        "repo.read",
+        "issue.create",
+        "issue.read",
+        "issue.update",
+        "pr.create",
+        "pr.review",
+        "pr.merge",
+        "actions.trigger",
+        "workflow.read"
+      ],
+      "recommendedPriority": 1,
+      "supportedPlatforms": ["win32", "darwin", "linux"],
+      "accountCardinality": "single",
+      "status": "active",
+      "recipeFile": "github-pat.recipe.json"
+    },
+    {
+      "id": "github-mcp",
+      "name": "GitHub MCP Server",
+      "transport": "mcp",
+      "identityType": "application",
+      "ownerKind": "provider",
+      "ownerRef": "dsh-mcp",
+      "sourceLevel": "community",
+      "officialSources": [
+        {
+          "title": "GitHub MCP Server",
+          "url": "https://github.com/modelcontextprotocol/servers",
+          "sourceType": "official-repo",
+          "verifiedAt": "2026-09-16"
+        }
+      ],
+      "capabilities": [
+        "repo.search",
+        "issue.create",
+        "pr.review"
+      ],
+      "recommendedPriority": 2,
+      "supportedPlatforms": ["win32", "darwin", "linux"],
+      "accountCardinality": "single",
+      "status": "active"
+    }
+  ]
+}

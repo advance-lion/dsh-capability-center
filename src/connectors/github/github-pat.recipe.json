@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "id": "github-pat",
+  "version": "1.0.0",
+  "integrationId": "github",
+  "methodId": "github-pat",
+  "platforms": ["win32", "darwin", "linux"],
+  "source": {
+    "level": "official-open-source",
+    "url": "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+  },
+  "intents": {
+    "connect": {
+      "steps": [
+        {
+          "id": "prompt-token",
+          "type": "credential.prompt",
+          "with": {
+            "credentialKind": "github-pat",
+            "fields": [
+              {
+                "key": "token",
+                "label": "GitHub Personal Access Token",
+                "secret": true,
+                "required": true,
+                "placeholder": "ghp_xxxxxxxxxxxx"
+              }
+            ]
+          },
+          "userAction": "enter-token",
+          "persist": ["credentialRef"]
+        },
+        {
+          "id": "verify-identity",
+          "type": "api.identity",
+          "with": {
+            "method": "GET",
+            "url": "https://api.github.com/user",
+            "headers": {
+              "Authorization": "Bearer ${credential.token}",
+              "Accept": "application/vnd.github+json"
+            }
+          },
+          "persist": ["json"]
+        },
+        {
+          "id": "assert-authenticated",
+          "type": "assert.expression",
+          "when": { "exists": { "path": "verify-identity.json" } },
+          "with": {
+            "expression": {
+              "all": [
+                { "exists": { "path": "verify-identity.json.login" } },
+                { "not": { "equals": { "path": "verify-identity.json.message", "value": "Bad credentials" } } }
+              ]
+            },
+            "message": "GitHub Token 验证失败，请检查 Token 是否正确。"
+          }
+        }
+      ]
+    },
+    "verify": {
+      "steps": [
+        {
+          "id": "recheck-identity",
+          "type": "api.identity",
+          "with": {
+            "method": "GET",
+            "url": "https://api.github.com/user",
+            "headers": {
+              "Authorization": "Bearer ${credential.token}",
+              "Accept": "application/vnd.github+json"
+            }
+          },
+          "persist": ["json"]
+        },
+        {
+          "id": "assert-still-valid",
+          "type": "assert.expression",
+          "when": { "exists": { "path": "recheck-identity.json" } },
+          "with": {
+            "expression": {
+              "not": { "equals": { "path": "recheck-identity.json.message", "value": "Bad credentials" } }
+            },
+            "message": "GitHub Token 已失效，需要重新生成。"
+          }
+        }
+      ]
+    }
+  }
+}
