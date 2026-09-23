@@ -36,6 +36,7 @@ const cliManifests: CliConnectorManifest[] = [
     authLoginCommand: 'lark-cli auth login',
     authLogoutCommand: 'lark-cli auth logout',
     identityCommand: 'lark-cli user me --json',
+    statusJsonPath: 'identities.user.status',
     capabilities: [
       'message.send', 'message.search', 'message.reply',
       'chat.create', 'chat.list', 'file.upload', 'card.send',
@@ -68,6 +69,7 @@ const cliManifests: CliConnectorManifest[] = [
     authStatusCommand: 'gh auth status --json',
     authLoginCommand: 'gh auth login',
     authLogoutCommand: 'gh auth logout',
+    statusJsonPath: 'status',
     capabilities: ['repo.search', 'issue.create', 'pr.review'],
     sourceUrl: 'https://cli.github.com',
     icon: '🐙',

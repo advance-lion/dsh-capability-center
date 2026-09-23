@@ -22,6 +22,8 @@ export interface CliConnectorManifest {
   authLoginCommand: string
   authLogoutCommand?: string
   identityCommand?: string
+  /** JSON path to the status field in the auth status response, e.g. 'identities.user.status' */
+  statusJsonPath?: string
   capabilities: string[]
   sourceUrl?: string
   icon?: string
@@ -47,6 +49,12 @@ function normalizeStatus(rawStatus: string | undefined): Capability['status'] {
   if (l.includes('logged_out') || l.includes('disconnected') || l.includes('offline')) return 'available'
   if (l.includes('error') || l.includes('failed')) return 'error'
   return 'available'
+}
+
+/** Read a nested path from a JSON object: 'identities.user.status' → 'needs_refresh' */
+function getPath(obj: any, path: string): unknown {
+  if (!path) return undefined
+  return path.split('.').reduce((acc, key) => (acc && typeof acc === 'object') ? acc[key] : undefined, obj)
 }
 
 /** Run a command and return stdout (sync, with timeout). */
@@ -164,7 +172,12 @@ export class DefaultCLIAdapter implements CLIAdapter {
     const text = result.stdout
     let json: any = null
     try { json = JSON.parse(text) } catch { /* not JSON */ }
-    if (json) return normalizeStatus(json.status || json.auth_status || '')
+    if (json) {
+      const status = manifest.statusJsonPath
+        ? getPath(json, manifest.statusJsonPath)
+        : (json.status || json.auth_status || '')
+      return normalizeStatus(typeof status === 'string' ? status : '')
+    }
     return normalizeStatus(text)
   }
 }
