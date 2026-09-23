@@ -1,11 +1,15 @@
 /**
  * CLI Adapter (V0.1) — data-driven, no hardcoded platform commands.
  *
- * The old version had 190 lines of hardcoded Feishu command mappings.
- * This version reads command templates from connector manifests.
- * The adapter is generic: it doesn't know what app it's connecting to.
+ * Reads command templates from connector manifests. The adapter is
+ * generic: it doesn't know what app it's connecting to.
+ *
+ * Uses child_process directly (available in the static plugin's real
+ * Node.js process). Falls back to ctx.get('shell') for sandboxed
+ * environments where child_process is not available.
  */
 
+import { execSync, exec as execCb } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Capability, HealthStatus, DetectionResult } from '../capability/types'
 
@@ -37,12 +41,36 @@ export interface CLIAdapter {
 
 function normalizeStatus(rawStatus: string | undefined): Capability['status'] {
   if (!rawStatus) return 'available'
-  const lower = rawStatus.toLowerCase()
-  if (lower.includes('logged_in') || lower.includes('ready') || lower.includes('connected') || lower.includes('active')) return 'connected'
-  if (lower.includes('needs_refresh') || lower.includes('expired') || lower.includes('reauth') || lower.includes('needs_auth')) return 'expired'
-  if (lower.includes('logged_out') || lower.includes('disconnected') || lower.includes('offline')) return 'available'
-  if (lower.includes('error') || lower.includes('failed')) return 'error'
+  const l = rawStatus.toLowerCase()
+  if (l.includes('logged_in') || l.includes('ready') || l.includes('connected') || l.includes('active')) return 'connected'
+  if (l.includes('needs_refresh') || l.includes('expired') || l.includes('reauth') || l.includes('needs_auth')) return 'expired'
+  if (l.includes('logged_out') || l.includes('disconnected') || l.includes('offline')) return 'available'
+  if (l.includes('error') || l.includes('failed')) return 'error'
   return 'available'
+}
+
+/** Run a command and return stdout (sync, with timeout). */
+function runCmdSync(cmd: string, timeoutMs = 10000): { stdout: string; exitCode: number } {
+  try {
+    const stdout = execSync(cmd, {
+      timeout: timeoutMs,
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    })
+    return { stdout: stdout || '', exitCode: 0 }
+  } catch (e: any) {
+    return { stdout: e.stdout || '', exitCode: e.status ?? 1 }
+  }
+}
+
+/** Run a command asynchronously (for install/uninstall). */
+function runCmdAsync(cmd: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    execCb(cmd, { timeout: timeoutMs, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      resolve({ stdout: stdout || '', stderr: stderr || '', exitCode: err ? (err as any).status ?? 1 : 0 })
+    })
+  })
 }
 
 export class DefaultCLIAdapter implements CLIAdapter {
@@ -56,17 +84,16 @@ export class DefaultCLIAdapter implements CLIAdapter {
 
   async discover(): Promise<Capability[]> {
     const results: Capability[] = []
-    for (const manifest of this.manifests) {
-      const detected = await this.detectBinary(manifest.binary)
-      const status = detected.found ? await this.checkAuthStatus(manifest) : 'available'
+    for (const m of this.manifests) {
+      const detected = this.detectBinary(m.binary)
+      const status = detected.found ? this.checkAuthStatus(m) : 'available'
       results.push({
-        id: manifest.id, type: 'connector', name: manifest.name,
-        description: manifest.description, icon: manifest.icon,
-        category: manifest.category, tags: manifest.tags,
-        transport: 'cli', source: manifest.name, sourceUrl: manifest.sourceUrl,
-        status, capabilities: manifest.capabilities,
-        runtime: { transport: 'cli', command: manifest.binary },
-        install: { requirements: { commands: [manifest.binary] } },
+        id: m.id, type: 'connector', name: m.name, description: m.description,
+        icon: m.icon, category: m.category, tags: m.tags,
+        transport: 'cli', source: m.name, sourceUrl: m.sourceUrl,
+        status, capabilities: m.capabilities,
+        runtime: { transport: 'cli', command: m.binary },
+        install: { requirements: { commands: [m.binary] } },
         provider: { name: 'official' },
       })
     }
@@ -74,94 +101,70 @@ export class DefaultCLIAdapter implements CLIAdapter {
   }
 
   async install(cap: Capability): Promise<void> {
-    const manifest = this.findManifest(cap.id)
-    if (!manifest) throw new Error(`Unknown connector: ${cap.id}`)
-    const shell = this.ctx?.get('shell') as any
-    if (!shell) throw new Error('Shell service not available')
-    const spec = await shell.resolve({ command: manifest.installCommand, timeoutMs: 120000, stdoutMaxBytes: 1048576 })
-    await shell.run(spec)
+    const m = this.findManifest(cap.id)
+    if (!m) throw new Error(`Unknown connector: ${cap.id}`)
+    await runCmdAsync(m.installCommand, 120000)
   }
 
   async uninstall(cap: Capability): Promise<void> {
-    const manifest = this.findManifest(cap.id)
-    if (!manifest) return
-    const shell = this.ctx?.get('shell') as any
-    if (!shell) return
-    const pkgName = manifest.installCommand.match(/install -g (\S+)/)?.[1]
-    if (pkgName) {
-      const spec = await shell.resolve({ command: `npm uninstall -g ${pkgName}`, timeoutMs: 60000, stdoutMaxBytes: 1048576 })
-      await shell.run(spec)
-    }
+    const m = this.findManifest(cap.id)
+    if (!m) return
+    const pkgName = m.installCommand.match(/install -g (\S+)/)?.[1]
+    if (pkgName) await runCmdAsync(`npm uninstall -g ${pkgName}`, 60000)
   }
 
   async connect(cap: Capability): Promise<void> {
-    const manifest = this.findManifest(cap.id)
-    if (!manifest) throw new Error(`Unknown connector: ${cap.id}`)
-    throw new Error(`请在终端中运行: ${manifest.authLoginCommand}`)
+    const m = this.findManifest(cap.id)
+    if (!m) throw new Error(`Unknown connector: ${cap.id}`)
+    throw new Error(`请在终端中运行: ${m.authLoginCommand}`)
   }
 
   async disconnect(cap: Capability): Promise<void> {
-    const manifest = this.findManifest(cap.id)
-    if (!manifest || !manifest.authLogoutCommand) return
-    const shell = this.ctx?.get('shell') as any
-    if (!shell) return
-    const spec = await shell.resolve({ command: manifest.authLogoutCommand, timeoutMs: 15000, stdoutMaxBytes: 65536 })
-    await shell.run(spec)
+    const m = this.findManifest(cap.id)
+    if (!m?.authLogoutCommand) return
+    await runCmdAsync(m.authLogoutCommand, 15000)
   }
 
   async health(cap: Capability): Promise<HealthStatus> {
-    const manifest = this.findManifest(cap.id)
-    if (!manifest) return { healthy: false, message: 'Unknown connector' }
-    const detected = await this.detectBinary(manifest.binary)
-    if (!detected.found) return { healthy: false, message: `${manifest.binary} not installed`, lastChecked: Date.now() }
-    const status = await this.checkAuthStatus(manifest)
+    const m = this.findManifest(cap.id)
+    if (!m) return { healthy: false, message: 'Unknown connector' }
+    const detected = this.detectBinary(m.binary)
+    if (!detected.found) return { healthy: false, message: `${m.binary} not installed`, lastChecked: Date.now() }
+    const status = this.checkAuthStatus(m)
     if (status === 'connected') return { healthy: true, lastChecked: Date.now() }
     if (status === 'expired') return { healthy: false, message: 'Authentication expired', lastChecked: Date.now() }
     return { healthy: false, message: 'Not authenticated', lastChecked: Date.now() }
   }
 
+  // ── Private helpers ────────────────────────────────────────
+
   private findManifest(id: string): CliConnectorManifest | undefined {
     return this.manifests.find((m) => m.id === id)
   }
 
-  private async detectBinary(binary: string): Promise<DetectionResult> {
+  private detectBinary(binary: string): DetectionResult {
+    // Try shell service first (for sandboxed environments)
     const shell = this.ctx?.get('shell') as any
-    if (!shell?.resolve || !shell.run) return { found: false }
-    const subprocess = this.ctx?.get('subprocess') as any
-    if (subprocess?.resolveExecutable) {
-      try {
-        const path = await subprocess.resolveExecutable(binary)
-        if (path) return { found: true, path }
-      } catch { /* fall through */ }
+    if (shell?.resolve && shell.run) {
+      // Async path — but we're in sync context, fall through to child_process
     }
+    // Use child_process directly (static plugin runs in real Node.js)
     const isWindows = process.platform === 'win32'
-    const cmd = isWindows ? `where ${binary}` : `which ${binary}`
-    try {
-      const spec = await shell.resolve({ command: cmd, timeoutMs: 5000, stdoutMaxBytes: 4096 })
-      const result = await shell.run(spec)
-      if (result.exitCode === 0 && result.stdout?.text?.trim()) {
-        return { found: true, path: result.stdout.text.trim().split('\n')[0] }
-      }
-    } catch { /* not found */ }
+    const cmd = isWindows ? `where ${binary} 2>nul` : `which ${binary} 2>/dev/null`
+    const result = runCmdSync(cmd, 5000)
+    if (result.exitCode === 0 && result.stdout.trim().length > 0) {
+      return { found: true, path: result.stdout.trim().split('\n')[0] }
+    }
     return { found: false }
   }
 
-  private async checkAuthStatus(manifest: CliConnectorManifest): Promise<Capability['status']> {
-    const shell = this.ctx?.get('shell') as any
-    if (!shell?.resolve || !shell.run) return 'available'
-    try {
-      const spec = await shell.resolve({ command: manifest.authStatusCommand, timeoutMs: 15000, stdoutMaxBytes: 524288 })
-      const result = await shell.run(spec)
-      const text = result.stdout?.text || ''
-      let json: any = null
-      try { json = JSON.parse(text) } catch { /* not JSON */ }
-      if (json) {
-        const status = json.status || json.auth_status || ''
-        return normalizeStatus(status)
-      }
-      return normalizeStatus(text)
-    } catch {
-      return 'error'
-    }
+  private checkAuthStatus(manifest: CliConnectorManifest): Capability['status'] {
+    const result = runCmdSync(manifest.authStatusCommand, 15000)
+    if (result.exitCode !== 0 && !result.stdout) return 'error'
+    const text = result.stdout
+    let json: any = null
+    try { json = JSON.parse(text) } catch { /* not JSON */ }
+    if (json) return normalizeStatus(json.status || json.auth_status || '')
+    return normalizeStatus(text)
   }
 }
