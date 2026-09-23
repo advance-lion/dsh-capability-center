@@ -1,10 +1,5 @@
-/**
- * Browser-side same-origin API for the Capability Center V0.1.
- *
- * Uses the new /views endpoint for the unified IntegrationView model.
- * Falls back to the compatibility /list endpoint if /views fails.
- */
-import type { IntegrationView, ProviderDescriptor, ActionResult, ManagerNavigation } from '../core/domain/types'
+/** Browser-side same-origin API for the publishable static plugin. */
+import type { Capability } from '../core/capability/types'
 
 const API_ROOT = '/api/capability-center'
 
@@ -37,65 +32,52 @@ async function get<T>(path: string): Promise<T> {
   return readJson<T>(await fetch(path, { credentials: 'same-origin' }))
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
+async function post<T>(path: string): Promise<T> {
   return readJson<T>(await fetch(path, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
   }))
 }
 
-// ── V0.1 API: IntegrationView ─────────────────────────────
-
-export async function listViews(): Promise<IntegrationView[]> {
-  const body = await get<{ views: IntegrationView[] }>(`${API_ROOT}/views`)
-  return body.views ?? []
+export async function listCapabilities(): Promise<Capability[]> {
+  const body = await get<{ capabilities: Capability[] }>(`${API_ROOT}/list`)
+  return body.capabilities ?? []
 }
 
-export async function getView(integrationId: string): Promise<IntegrationView | null> {
-  const body = await get<{ view: IntegrationView | null }>(
-    `${API_ROOT}/views/${encodeURIComponent(integrationId)}`,
+export async function getCapability(id: string): Promise<Capability | null> {
+  const body = await get<{ capability: Capability | null }>(
+    `${API_ROOT}/${encodeURIComponent(id)}`,
   )
-  return body.view ?? null
+  return body.capability ?? null
 }
 
-// ── V0.1 API: Providers ───────────────────────────────────
-
-export async function listProviders(): Promise<ProviderDescriptor[]> {
-  const body = await get<{ providers: ProviderDescriptor[] }>(`${API_ROOT}/providers`)
-  return body.providers ?? []
+export async function installCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/install`)
 }
 
-// ── V0.1 API: Actions ─────────────────────────────────────
-
-export async function executeAction(params: {
-  actionId: string
-  integrationId?: string
-  methodId: string
-  externalInstanceId?: string
-  input?: Record<string, unknown>
-}): Promise<ActionResult & { navigation?: ManagerNavigation }> {
-  const body = await post<{ result: ActionResult & { navigation?: ManagerNavigation } }>(
-    `${API_ROOT}/action`,
-    params,
-  )
-  return body.result
+export async function uninstallCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/uninstall`)
 }
 
-// ── V0.1 API: Recipes ─────────────────────────────────────
-
-export interface RecipeSummary {
-  id: string
-  version: string
-  integrationId: string
-  methodId: string
-  valid: boolean
-  errors: string[]
-  warnings: string[]
+export async function enableCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/enable`)
 }
 
-export async function listRecipes(): Promise<RecipeSummary[]> {
-  const body = await get<{ recipes: RecipeSummary[] }>(`${API_ROOT}/recipes`)
-  return body.recipes ?? []
+export async function disableCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/disable`)
+}
+
+export async function connectCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/connect`)
+}
+
+export async function disconnectCapability(id: string): Promise<void> {
+  await post(`${API_ROOT}/${encodeURIComponent(id)}/disconnect`)
+}
+
+export async function checkHealth(
+  id: string,
+): Promise<{ healthy: boolean; message?: string }> {
+  return get(`${API_ROOT}/${encodeURIComponent(id)}/health`)
 }
