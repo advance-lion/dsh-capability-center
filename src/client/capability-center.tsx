@@ -1,14 +1,14 @@
-/** Capability Center main-panel UI. */
+/**
+ * Capability Center V0.1 main-panel UI.
+ *
+ * Uses the new IntegrationView model from /views endpoint.
+ * No hardcoded platform names — all actions come from ActionDescriptor[]
+ * returned by the API. No special-casing for specific app IDs.
+ */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { Capability, CapabilityType } from '../core/capability/types'
-import {
-  connectCapability,
-  disableCapability,
-  disconnectCapability,
-  enableCapability,
-  installCapability,
-  listCapabilities,
-} from './api.ts'
+import type { IntegrationView, MethodView, ActionDescriptor, ObservedState } from '../core/domain/types'
+import { listViews, executeAction } from './api.ts'
+import { observedStateLabels, healthStateLabels, observedStateDotClass } from '../core/domain/status'
 import type { CapabilityCenterKey } from './locales.ts'
 import * as s from './capability-center.module.css'
 
@@ -28,37 +28,22 @@ const CATEGORY_KEYS = [
   ['其他', 'categoryOther'],
 ] as const
 
-const TYPE_LABELS: Record<CapabilityType, CapabilityCenterKey> = {
-  skill: 'tabSkill',
-  connector: 'tabConnector',
-  partner: 'tabPartner',
-}
-
-const STATUS_LABELS: Record<string, CapabilityCenterKey> = {
-  available: 'statusAvailable',
-  installed: 'statusInstalled',
-  connected: 'statusConnected',
-  disabled: 'statusDisabled',
-  expired: 'statusExpired',
-  error: 'statusError',
-}
-
 export function CapabilityCenterPanel({ t }: PanelProps) {
-  const [capabilities, setCapabilities] = useState<Capability[] | null>(null)
+  const [views, setViews] = useState<IntegrationView[] | null>(null)
   const [error, setError] = useState('')
-  const [activeTab, setActiveTab] = useState<'all' | CapabilityType>('all')
   const [activeCategory, setActiveCategory] = useState('all')
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState<Capability | null>(null)
+  const [selected, setSelected] = useState<IntegrationView | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setError('')
     try {
-      setCapabilities(await listCapabilities())
+      setViews(await listViews())
     } catch (cause) {
-      console.error('[capability-center] discovery failed:', cause)
+      console.error('[capability-center] load failed:', cause)
       setError(cause instanceof Error ? cause.message : String(cause))
-      setCapabilities([])
+      setViews([])
     }
   }, [])
 
@@ -66,26 +51,46 @@ export function CapabilityCenterPanel({ t }: PanelProps) {
     void refresh()
   }, [refresh])
 
-  const filtered = useMemo(() => (capabilities ?? []).filter((cap) => {
-    if (activeTab !== 'all' && cap.type !== activeTab) return false
-    if (activeCategory !== 'all' && !cap.category?.includes(activeCategory)) return false
+  const filtered = useMemo(() => (views ?? []).filter((v) => {
+    if (activeCategory !== 'all' && !v.integration.categories?.includes(activeCategory)) return false
     const query = search.trim().toLowerCase()
     if (!query) return true
-    return [cap.name, cap.description, cap.source, ...(cap.tags ?? [])]
+    return [v.integration.name, v.integration.description, ...v.methods.flatMap((m) => m.method.capabilities)]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(query))
-  }), [capabilities, activeTab, activeCategory, search])
+  }), [views, activeCategory, search])
 
-  const counts = useMemo(() => ({
-    all: capabilities?.length ?? 0,
-    skill: capabilities?.filter((cap) => cap.type === 'skill').length ?? 0,
-    connector: capabilities?.filter((cap) => cap.type === 'connector').length ?? 0,
-    partner: capabilities?.filter((cap) => cap.type === 'partner').length ?? 0,
-  }), [capabilities])
+  const stats = useMemo(() => {
+    let total = 0, connected = 0, needsAttention = 0
+    for (const v of views ?? []) {
+      total++
+      connected += v.stats.connected
+      needsAttention += v.stats.needsAttention
+    }
+    return { total, connected, needsAttention }
+  }, [views])
 
-  const ready = capabilities?.filter((cap) =>
-    cap.status === 'installed' || cap.status === 'connected',
-  ).length ?? 0
+  const handleAction = useCallback(async (view: IntegrationView, method: MethodView, action: ActionDescriptor) => {
+    setActionLoading(action.id)
+    try {
+      const result = await executeAction({
+        actionId: action.id,
+        integrationId: view.integration.id,
+        methodId: method.method.id,
+      })
+      // If navigation, redirect to settings
+      if (result.navigation?.type === 'settings-section') {
+        // The DSH client runtime handles navigation to settings sections
+        // via the slots system — we just inform the user
+        console.log('[capability-center] navigate to settings:', result.navigation.target)
+      }
+      await refresh()
+    } catch (cause) {
+      console.error('[capability-center] action failed:', cause)
+    } finally {
+      setActionLoading(null)
+    }
+  }, [refresh])
 
   return (
     <main className={s.root}>
@@ -97,24 +102,15 @@ export function CapabilityCenterPanel({ t }: PanelProps) {
             <div className={s.subtitle}>{t('subtitle')}</div>
           </div>
           <div className={s.stats}>
-            <Stat value={counts.all} label={t('allCapabilities')} />
-            <Stat value={ready} label={t('readyCapabilities')} />
+            <Stat value={stats.total} label={t('allCapabilities')} />
+            <Stat value={stats.connected} label={t('readyCapabilities')} />
+            {stats.needsAttention > 0 && (
+              <Stat value={stats.needsAttention} label={t('needsAttention')} highlight />
+            )}
           </div>
         </section>
 
         <div className={s.toolbar}>
-          <div className={s.tabs}>
-            {(['all', 'skill', 'connector', 'partner'] as const).map((tab) => (
-              <button
-                key={tab}
-                className={tab === activeTab ? s.tabActive : s.tab}
-                onClick={() => setActiveTab(tab)}
-              >
-                {t(tab === 'all' ? 'tabAll' : TYPE_LABELS[tab])}
-                <span className={s.tabCount}>{counts[tab]}</span>
-              </button>
-            ))}
-          </div>
           <div className={s.searchRow}>
             <input
               className={s.search}
@@ -140,7 +136,7 @@ export function CapabilityCenterPanel({ t }: PanelProps) {
           ))}
         </div>
 
-        {capabilities === null ? (
+        {views === null ? (
           <div className={s.loading}><span className={s.spinner} />{t('loading')}</div>
         ) : error ? (
           <div className={s.empty}>{t('loadError')}: {error}</div>
@@ -148,23 +144,26 @@ export function CapabilityCenterPanel({ t }: PanelProps) {
           <div className={s.empty}>{t('noResults')}</div>
         ) : (
           <div className={s.grid}>
-            {filtered.map((cap) => (
-              <CapabilityCard
-                key={`${cap.type}:${cap.id}`}
-                cap={cap}
+            {filtered.map((view) => (
+              <IntegrationCard
+                key={view.integration.id}
+                view={view}
                 t={t}
-                onClick={() => setSelected(cap)}
-                onAction={(action) => void handleAction(cap.id, action, refresh)}
+                onClick={() => setSelected(view)}
+                onAction={(method, action) => void handleAction(view, method, action)}
+                actionLoading={actionLoading}
               />
             ))}
           </div>
         )}
 
         {selected && (
-          <CapabilityDetail
-            cap={selected}
+          <IntegrationDetail
+            view={selected}
             t={t}
             onClose={() => setSelected(null)}
+            onAction={(method, action) => void handleAction(selected, method, action)}
+            actionLoading={actionLoading}
           />
         )}
       </div>
@@ -172,58 +171,75 @@ export function CapabilityCenterPanel({ t }: PanelProps) {
   )
 }
 
-function Stat({ value, label }: { value: number; label: string }) {
-  return <div className={s.stat}><strong>{value}</strong><span>{label}</span></div>
+function Stat({ value, label, highlight }: { value: number; label: string; highlight?: boolean }) {
+  return (
+    <div className={`${s.stat} ${highlight ? s.statHighlight : ''}`}>
+      <strong>{value}</strong><span>{label}</span>
+    </div>
+  )
 }
 
-function CapabilityCard({ cap, t, onClick, onAction }: {
-  cap: Capability
+function IntegrationCard({ view, t, onClick, onAction, actionLoading }: {
+  view: IntegrationView
   t: (key: CapabilityCenterKey) => string
   onClick: () => void
-  onAction: (action: string) => void
+  onAction: (method: MethodView, action: ActionDescriptor) => void
+  actionLoading: string | null
 }) {
-  const action = getCardAction(cap, t)
+  const { integration, methods, stats } = view
+  const primaryMethod = methods[0]
+  const primaryAction = primaryMethod?.actions[0]
+
+  // Derive overall status from instances
+  const overallState: ObservedState = stats.connected > 0 ? 'connected'
+    : stats.needsAttention > 0 ? 'reauth_required'
+    : 'not_configured'
+
   return (
     <article className={s.card} onClick={onClick}>
       <div className={s.cardTop}>
-        <div className={s.cardIcon}>{cap.icon ?? '⚡'}</div>
+        <div className={s.cardIcon}>{integration.icon ?? '⚡'}</div>
         <div className={s.cardInfo}>
           <div className={s.nameRow}>
-            <div className={s.cardName}>{cap.name}</div>
-            <span className={s.badgeType}>{t(TYPE_LABELS[cap.type])}</span>
+            <div className={s.cardName}>{integration.name}</div>
+            <span className={s.badgeType}>{methods.length} {t('connectionMethods')}</span>
           </div>
-          <div className={s.cardDesc}>{cap.description}</div>
+          <div className={s.cardDesc}>{integration.description}</div>
         </div>
       </div>
       <div className={s.cardMeta}>
-        {cap.transport && <span className={s.badgeTransport}>{cap.transport.toUpperCase()}</span>}
-        {cap.sourceUrl ? (
+        {methods.map((mv) => (
+          <span key={mv.method.id} className={s.badgeTransport}>
+            {mv.method.transport.toUpperCase()}
+          </span>
+        ))}
+        {integration.homepageUrl && (
           <a
             className={s.sourceLink}
-            href={cap.sourceUrl}
+            href={integration.homepageUrl}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(event) => event.stopPropagation()}
-            title={cap.sourceUrl}
           >
-            ↗ {cap.source ?? domain(cap.sourceUrl)} · {domain(cap.sourceUrl)}
+            ↗ {domain(integration.homepageUrl)}
           </a>
-        ) : <span className={s.sourceLink}>{cap.source}</span>}
+        )}
       </div>
       <div className={s.cardBottom}>
         <div className={s.status}>
-          <span className={`${s.statusDot} ${s['status_' + cap.status]}`} />
-          {t(STATUS_LABELS[cap.status] ?? 'statusAvailable')}
+          <span className={`${s.statusDot} ${s['status_' + observedStateDotClass(overallState)]}`} />
+          {t(stateLabelKey(overallState))}
         </div>
-        {action && (
+        {primaryAction && primaryMethod && (
           <button
-            className={action.primary ? s.btnPrimary : s.btnSecondary}
+            className={primaryAction.risk === 'read' ? s.btnSecondary : s.btnPrimary}
+            disabled={actionLoading === primaryAction.id}
             onClick={(event) => {
               event.stopPropagation()
-              onAction(action.action)
+              onAction(primaryMethod, primaryAction)
             }}
           >
-            {action.label}
+            {actionLoading === primaryAction.id ? t('actionExecuting') : primaryAction.label}
           </button>
         )}
       </div>
@@ -231,19 +247,22 @@ function CapabilityCard({ cap, t, onClick, onAction }: {
   )
 }
 
-function CapabilityDetail({ cap, t, onClose }: {
-  cap: Capability
+function IntegrationDetail({ view, t, onClose, onAction, actionLoading }: {
+  view: IntegrationView
   t: (key: CapabilityCenterKey) => string
   onClose: () => void
+  onAction: (method: MethodView, action: ActionDescriptor) => void
+  actionLoading: string | null
 }) {
+  const { integration, methods } = view
   return (
     <div className={s.overlay} onClick={onClose}>
       <section className={s.detail} onClick={(event) => event.stopPropagation()}>
         <header className={s.detailHeader}>
-          <div className={s.detailIcon}>{cap.icon ?? '⚡'}</div>
+          <div className={s.detailIcon}>{integration.icon ?? '⚡'}</div>
           <div className={s.detailInfo}>
-            <div className={s.detailName}>{cap.name}</div>
-            <div className={s.detailDesc}>{cap.description}</div>
+            <div className={s.detailName}>{integration.name}</div>
+            <div className={s.detailDesc}>{integration.description}</div>
           </div>
           <button className={s.closeBtn} onClick={onClose}>✕</button>
         </header>
@@ -251,32 +270,72 @@ function CapabilityDetail({ cap, t, onClose }: {
           <section className={s.detailSection}>
             <h3 className={s.sectionTitle}>{t('capabilityInfo')}</h3>
             <div className={s.metaGrid}>
-              <div className={s.metaLabel}>{t('type')}</div>
-              <div className={s.metaValue}>{t(TYPE_LABELS[cap.type])}</div>
               <div className={s.metaLabel}>{t('source')}</div>
-              <div className={s.metaValue}>{cap.source}</div>
-              <div className={s.metaLabel}>{t('path')}</div>
-              <div className={s.metaValue}><code>{cap.sourcePath}</code></div>
-              <div className={s.metaLabel}>{t('status')}</div>
-              <div className={s.metaValue}>{t(STATUS_LABELS[cap.status] ?? 'statusAvailable')}</div>
-              {cap.sourceUrl && <>
+              <div className={s.metaValue}>{integration.vendor || integration.name}</div>
+              {integration.homepageUrl && <>
                 <div className={s.metaLabel}>{t('sourceUrl')}</div>
                 <div className={s.metaValue}>
-                  <a className={s.detailSourceLink} href={cap.sourceUrl} target="_blank" rel="noopener noreferrer">
-                    {cap.sourceUrl} ↗
+                  <a className={s.detailSourceLink} href={integration.homepageUrl} target="_blank" rel="noopener noreferrer">
+                    {integration.homepageUrl} ↗
                   </a>
                 </div>
               </>}
             </div>
           </section>
-          {!!cap.capabilities?.length && (
-            <section className={s.detailSection}>
-              <h3 className={s.sectionTitle}>{t('providedCapabilities')}</h3>
-              <div className={s.capList}>
-                {cap.capabilities.map((item) => <span key={item} className={s.capItem}>{item}</span>)}
+
+          {methods.map((mv) => (
+            <section key={mv.method.id} className={s.detailSection}>
+              <h3 className={s.sectionTitle}>
+                {mv.method.name}
+                <span className={s.badgeType}>
+                  {mv.method.ownerKind === 'provider' ? t('providerManaged') : t('recipeManaged')}
+                </span>
+              </h3>
+              <div className={s.metaGrid}>
+                <div className={s.metaLabel}>{t('transport')}</div>
+                <div className={s.metaValue}>{mv.method.transport.toUpperCase()}</div>
+                <div className={s.metaLabel}>{t('identityType')}</div>
+                <div className={s.metaValue}>{mv.method.identityType}</div>
               </div>
+
+              {mv.instances.length > 0 && (
+                <div className={s.metaGrid}>
+                  {mv.instances.map((inst) => (
+                    <div key={inst.id} className={s.metaValue}>
+                      <span className={`${s.statusDot} ${s['status_' + observedStateDotClass(inst.observedState)]}`} />
+                      {inst.displayName} — {t(stateLabelKey(inst.observedState))}
+                      {inst.healthState !== 'unknown' && ` (${t(healthLabelKey(inst.healthState))})`}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!!mv.method.capabilities.length && (
+                <div className={s.capList}>
+                  {mv.method.capabilities.map((cap) => (
+                    <span key={cap} className={s.capItem}>{cap}</span>
+                  ))}
+                </div>
+              )}
+
+              {mv.actions.length > 0 ? (
+                <div className={s.capList}>
+                  {mv.actions.map((action) => (
+                    <button
+                      key={action.id}
+                      className={action.risk === 'read' ? s.btnSecondary : s.btnPrimary}
+                      disabled={actionLoading === action.id}
+                      onClick={() => onAction(mv, action)}
+                    >
+                      {actionLoading === action.id ? t('actionExecuting') : action.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className={s.empty}>{t('noActions')}</div>
+              )}
             </section>
-          )}
+          ))}
         </div>
       </section>
     </div>
@@ -291,34 +350,23 @@ function domain(url: string): string {
   }
 }
 
-function getCardAction(cap: Capability, t: (key: CapabilityCenterKey) => string) {
-  if (cap.type === 'skill') {
-    return cap.status === 'disabled'
-      ? { action: 'enable', label: t('btnEnable'), primary: true }
-      : { action: 'configure', label: t('btnManage'), primary: false }
+function stateLabelKey(state: ObservedState): CapabilityCenterKey {
+  switch (state) {
+    case 'connected': return 'statusConnected'
+    case 'disconnected': return 'statusDisconnected'
+    case 'reauth_required': return 'statusReauth'
+    case 'revoked': return 'statusRevoked'
+    case 'not_configured': return 'statusNotConfigured'
+    case 'provider_unavailable': return 'statusUnavailable'
+    default: return 'statusUnknown'
   }
-  if (cap.id === 'lark-im') {
-    return { action: 'configure', label: cap.status === 'installed' ? t('btnOpenDshIm') : t('btnRecommendInstall'), primary: false }
-  }
-  if (cap.type === 'partner') return null
-  if (cap.status === 'connected') return { action: 'disconnect', label: t('btnDisconnect'), primary: false }
-  if (cap.status === 'installed') return { action: 'configure', label: t('btnManage'), primary: false }
-  if (cap.status === 'disabled') return { action: 'enable', label: t('btnEnable'), primary: true }
-  if (cap.transport === 'mcp' || cap.transport === 'cli') {
-    return { action: 'connect', label: t('btnConnect'), primary: true }
-  }
-  return null
 }
 
-async function handleAction(id: string, action: string, refresh: () => Promise<void>) {
-  try {
-    if (action === 'install') await installCapability(id)
-    if (action === 'enable') await enableCapability(id)
-    if (action === 'disable') await disableCapability(id)
-    if (action === 'connect') await connectCapability(id)
-    if (action === 'disconnect') await disconnectCapability(id)
-    await refresh()
-  } catch (error) {
-    console.error('[capability-center] action failed:', error)
+function healthLabelKey(health: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'): CapabilityCenterKey {
+  switch (health) {
+    case 'healthy': return 'healthHealthy'
+    case 'degraded': return 'healthDegraded'
+    case 'unhealthy': return 'healthUnhealthy'
+    default: return 'statusUnknown'
   }
 }

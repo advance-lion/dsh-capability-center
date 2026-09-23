@@ -1,0 +1,65 @@
+{
+  "integration": {
+    "id": "feishu",
+    "name": "飞书",
+    "vendor": "Lark Suite",
+    "description": "飞书/Lark 一体化协作平台，支持消息、日历、文档、审批等",
+    "icon": "🐦",
+    "homepageUrl": "https://www.feishu.cn",
+    "categories": ["办公", "协作", "通讯"],
+    "status": "active"
+  },
+  "methods": [
+    {
+      "id": "feishu-cli-user",
+      "name": "Lark CLI 用户认证",
+      "transport": "cli",
+      "identityType": "user",
+      "ownerKind": "recipe",
+      "ownerRef": "feishu-cli-user",
+      "sourceLevel": "official-open-source",
+      "officialSources": [
+        {
+          "title": "Lark CLI 官方文档",
+          "url": "https://open.larksuite.com/document/cli/cli-overview",
+          "sourceType": "official-doc",
+          "verifiedAt": "2026-09-16"
+        }
+      ],
+      "capabilities": [
+        "message.send",
+        "message.receive",
+        "calendar.manage",
+        "doc.read",
+        "doc.write",
+        "approval.manage",
+        "task.manage",
+        "contact.lookup"
+      ],
+      "recommendedPriority": 1,
+      "supportedPlatforms": ["win32", "darwin", "linux"],
+      "accountCardinality": "single",
+      "status": "active",
+      "recipeFile": "feishu-cli-user.recipe.json"
+    },
+    {
+      "id": "feishu-dsh-im-bot",
+      "name": "飞书 Bot (dsh-im 托管)",
+      "transport": "bot",
+      "identityType": "application",
+      "ownerKind": "provider",
+      "ownerRef": "dsh-im",
+      "sourceLevel": "community",
+      "officialSources": [],
+      "capabilities": [
+        "message.send",
+        "message.receive",
+        "bot.manage"
+      ],
+      "recommendedPriority": 2,
+      "supportedPlatforms": ["win32", "darwin", "linux"],
+      "accountCardinality": "multiple",
+      "status": "active"
+    }
+  ]
+}

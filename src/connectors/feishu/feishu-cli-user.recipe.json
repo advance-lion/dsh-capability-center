@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "id": "feishu-cli-user",
+  "version": "1.0.0",
+  "integrationId": "feishu",
+  "methodId": "feishu-cli-user",
+  "platforms": ["win32", "darwin", "linux"],
+  "source": {
+    "level": "official-open-source",
+    "url": "https://open.larksuite.com/document/cli/cli-overview"
+  },
+  "intents": {
+    "connect": {
+      "steps": [
+        {
+          "id": "detect-cli",
+          "type": "executable.resolve",
+          "with": {
+            "command": "lark-cli"
+          },
+          "persist": ["found", "path"]
+        },
+        {
+          "id": "check-not-found",
+          "type": "assert.expression",
+          "when": {
+            "not": { "exists": { "path": "detect-cli.found" } }
+          },
+          "with": {
+            "expression": { "equals": { "path": "detect-cli.found", "value": false } },
+            "message": "lark-cli 未安装。请运行 npm install -g @larksuite/cli 安装。"
+          }
+        },
+        {
+          "id": "auth-status",
+          "type": "command.json",
+          "when": { "exists": { "path": "detect-cli.found" } },
+          "with": {
+            "command": "lark-cli auth status --json",
+            "timeoutMs": 15000,
+            "stdoutMaxBytes": 524288,
+            "expectError": true
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-authenticated",
+          "type": "assert.expression",
+          "when": { "exists": { "path": "auth-status.json" } },
+          "with": {
+            "expression": {
+              "any": [
+                { "equals": { "path": "auth-status.json.status", "value": "logged_in" } },
+                { "equals": { "path": "auth-status.json.status", "value": "ready" } },
+                { "in": { "path": "auth-status.json.status", "values": ["logged_in", "ready", "needs_refresh"] } }
+              ]
+            },
+            "message": "飞书 CLI 未登录。请运行 lark-cli auth login 完成认证。"
+          }
+        },
+        {
+          "id": "verify-identity",
+          "type": "command.json",
+          "when": {
+            "all": [
+              { "exists": { "path": "auth-status.json" } },
+              { "not": { "equals": { "path": "auth-status.json.status", "value": "logged_out" } } }
+            ]
+          },
+          "with": {
+            "command": "lark-cli user me --json",
+            "timeoutMs": 15000,
+            "stdoutMaxBytes": 524288,
+            "expectError": true
+          },
+          "persist": ["json"]
+        }
+      ]
+    },
+    "verify": {
+      "steps": [
+        {
+          "id": "recheck-auth",
+          "type": "command.json",
+          "with": {
+            "command": "lark-cli auth status --json",
+            "timeoutMs": 15000,
+            "stdoutMaxBytes": 524288,
+            "expectError": true
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-still-authed",
+          "type": "assert.expression",
+          "when": { "exists": { "path": "recheck-auth.json" } },
+          "with": {
+            "expression": {
+              "any": [
+                { "equals": { "path": "recheck-auth.json.status", "value": "logged_in" } },
+                { "equals": { "path": "recheck-auth.json.status", "value": "ready" } },
+                { "equals": { "path": "recheck-auth.json.status", "value": "needs_refresh" } }
+              ]
+            },
+            "message": "飞书 CLI 认证已失效，需要重新登录。"
+          }
+        }
+      ]
+    },
+    "reauthorize": {
+      "steps": [
+        {
+          "id": "login",
+          "type": "terminal.interactive",
+          "with": {
+            "command": "lark-cli auth login",
+            "message": "请在终端中完成飞书登录认证"
+          },
+          "userAction": "complete-login",
+          "timeoutMs": 300000
+        },
+        {
+          "id": "verify-after-login",
+          "type": "command.json",
+          "with": {
+            "command": "lark-cli auth status --json",
+            "timeoutMs": 15000,
+            "stdoutMaxBytes": 524288,
+            "expectError": true
+          },
+          "persist": ["json"]
+        },
+        {
+          "id": "assert-login-success",
+          "type": "assert.expression",
+          "when": { "exists": { "path": "verify-after-login.json" } },
+          "with": {
+            "expression": {
+              "any": [
+                { "equals": { "path": "verify-after-login.json.status", "value": "logged_in" } },
+                { "equals": { "path": "verify-after-login.json.status", "value": "ready" } }
+              ]
+            },
+            "message": "登录后认证状态仍不正常"
+          }
+        }
+      ]
+    }
+  }
+}

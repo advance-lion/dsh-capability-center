@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DSH 能力中心目标架构",
+    "output": "capability-center-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1320, 760],
+    "views": [
+      {
+        "id": "discovery",
+        "label": "统一发现与展示",
+        "focus": ["user", "ui", "aggregator", "providers", "dshim"],
+        "note": "应用视角聚合 Skill、MCP、Recipe 和专业 Provider 的脱敏状态。"
+      },
+      {
+        "id": "recipe",
+        "label": "配方自动化链路",
+        "focus": ["ui", "orchestrator", "recipe", "executors", "external"],
+        "note": "对没有专业插件托管的 CLI、MCP、API 和 OAuth 接入执行版本化 Recipe。"
+      },
+      {
+        "id": "governance",
+        "label": "目录与运行治理",
+        "focus": ["catalog", "runtime", "aggregator", "orchestrator", "credentials"],
+        "note": "官方知识与本机运行记录分库，敏感值只进入 DSH Credential Store。"
+      }
+    ]
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "用户 / Agent", "sublabel": "发现、连接、切换账号", "pos": [40, 300], "size": [145, 66] },
+    { "id": "ui", "type": "frontend", "label": "统一能力中心 UI", "sublabel": "应用 · 连接实例 · Provider", "pos": [245, 300], "size": [175, 66] },
+    { "id": "aggregator", "type": "backend", "label": "Connection Aggregator", "sublabel": "聚合、归属、状态标准化", "pos": [485, 170], "size": [190, 70] },
+    { "id": "orchestrator", "type": "backend", "label": "Connection Orchestrator", "sublabel": "意图、计划、暂停与恢复", "pos": [485, 430], "size": [190, 70] },
+    { "id": "providers", "type": "backend", "label": "Capability Provider Registry", "sublabel": "SPI · 动作 · Evidence", "pos": [755, 120], "size": [195, 72] },
+    { "id": "recipe", "type": "backend", "label": "Recipe Engine", "sublabel": "版本化状态机", "pos": [755, 430], "size": [175, 70] },
+    { "id": "catalog", "type": "database", "label": "Catalog SQLite", "sublabel": "官方来源 · 方法 · Recipe", "pos": [485, 40], "size": [180, 64] },
+    { "id": "runtime", "type": "database", "label": "Runtime SQLite", "sublabel": "实例 · Run · Evidence", "pos": [485, 600], "size": [180, 64] },
+    { "id": "dshim", "type": "external", "label": "@xmanrui/dsh-im", "sublabel": "委托托管 IM 多账号", "pos": [1040, 80], "size": [190, 70], "tag": "首选 IM Provider" },
+    { "id": "executors", "type": "backend", "label": "受限 Step Executors", "sublabel": "CLI · MCP · OAuth · API", "pos": [1025, 405], "size": [205, 72] },
+    { "id": "credentials", "type": "security", "label": "DSH Credential Store", "sublabel": "只保存 secret，返回引用", "pos": [755, 600], "size": [195, 66] },
+    { "id": "external", "type": "cloud", "label": "官方应用与服务", "sublabel": "API · OAuth · MCP · CLI", "pos": [1040, 600], "size": [190, 66] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "能力中心核心", "wraps": ["ui", "aggregator", "orchestrator", "providers", "recipe", "catalog", "runtime", "executors"] },
+    { "kind": "security-group", "label": "敏感凭据边界", "wraps": ["credentials"] }
+  ],
+  "connections": [
+    { "id": "user-ui", "from": "user", "to": "ui", "label": "统一交互", "variant": "emphasis" },
+    { "id": "ui-read", "from": "ui", "to": "aggregator", "label": "读取聚合视图", "variant": "emphasis" },
+    { "id": "ui-intent", "from": "ui", "to": "orchestrator", "label": "提交连接意图", "variant": "emphasis" },
+    { "id": "catalog-read", "from": "catalog", "to": "aggregator", "label": "应用与方法", "fromSide": "bottom", "toSide": "top" },
+    { "id": "runtime-read", "from": "runtime", "to": "orchestrator", "label": "恢复 Run", "fromSide": "top", "toSide": "bottom" },
+    { "id": "provider-discovery", "from": "aggregator", "to": "providers", "label": "发现实例与动作" },
+    { "id": "provider-delegate", "from": "providers", "to": "dshim", "label": "委托管理与诊断", "variant": "emphasis" },
+    { "id": "recipe-start", "from": "orchestrator", "to": "recipe", "label": "启动 Recipe" },
+    { "id": "recipe-execute", "from": "recipe", "to": "executors", "label": "执行受限步骤" },
+    { "id": "executor-service", "from": "executors", "to": "external", "label": "官方协议调用", "fromSide": "bottom", "toSide": "top" },
+    { "id": "recipe-secret", "from": "recipe", "to": "credentials", "label": "credential:// 引用", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "run-evidence", "from": "recipe", "to": "runtime", "label": "步骤结果与 Evidence" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "双轨接入", "items": ["Recipe-managed：CLI、MCP、API、OAuth", "Provider-managed：dsh-im 等专业领域插件"] },
+    { "dot": "emerald", "title": "单一事实来源", "items": ["每个连接实例只有一个 Owner", "能力中心只聚合并委托，不复制 Provider 状态"] },
+    { "dot": "rose", "title": "安全边界", "items": ["数据库不保存 Token、密码、Cookie 或验证码", "执行计划、风险与官方来源在动作前可审查"] }
+  ]
+}

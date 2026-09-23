@@ -1,113 +1,51 @@
 /**
- * DSH Capability Center — Host-side Cordis Plugin Entry
+ * DSH Capability Center — Host-side Cordis Plugin Entry (V0.1)
  *
- * This plugin runs in the DSH Node.js host process. It:
- * 1. Creates the CapabilityCatalog, CapabilityRegistry, and adapters
- * 2. Registers the OfficialProvider with built-in capabilities
- * 3. Registers the same-origin HTTP API under /api/capability-center/*
+ * Major changes from V0:
+ * - No hardcoded capability list. Connector manifests are loaded from
+ *   src/connectors/{name}/manifest.json at build time.
+ * - New domain layer: Integration → ConnectionMethod → ConnectionInstance.
+ * - Provider registry with dsh-im L0 adapter.
+ * - Recipe system with built-in executors.
+ * - Hardened HTTP API with Origin/CSRF checks.
  *
- * The Client half renders the sidebar entry and main panel in the browser.
+ * The old flat Capability[] API is preserved via a compatibility projection
+ * so the existing UI keeps working during migration.
  */
 import { Context } from '@deepseek-ai/cordis'
-import type { Capability } from './core/capability/types'
-import { CapabilityCatalog } from './core/capability/catalog'
-import { CapabilityRegistry } from './core/capability/registry'
-import { OfficialProvider } from './core/capability/provider'
+
+// New domain layer
+import { JsonCatalogStore } from './core/catalog/json-store'
+import type { ConnectorManifest } from './core/catalog/manifest'
+import { JsonRuntimeStore } from './core/runtime/json-store'
+import { ProviderRegistry } from './core/provider/registry'
+import { ConnectionAggregator } from './core/provider/aggregator'
+import { createDshImL0Provider } from './core/provider/adapters/dsh-im-l0'
+
+// Recipe system
+import { ExecutorRegistry } from './core/recipe/executor-registry'
+import { registerBuiltinExecutors } from './core/recipe/builtin-executors'
+import { validateRecipe } from './core/recipe/schema'
+
+// Existing adapters (still useful for skill/MCP discovery)
 import { DefaultSkillAdapter } from './core/adapters/skill-adapter'
 import { DefaultMCPAdapter } from './core/adapters/mcp-adapter'
-import { DefaultCLIAdapter } from './core/adapters/cli-adapter'
-import { DefaultIMRecommendationAdapter } from './core/adapters/im-recommendation-adapter'
+
+// Routes
 import { registerRoutes } from './routes'
 
-// ===== Built-in Official Capabilities =====
-const builtinCapabilities: Capability[] = [
-  {
-    id: 'feishu',
-    type: 'connector',
-    name: '飞书',
-    description: '连接飞书消息、文档、表格、日历、任务、邮件等全量协作能力',
-    icon: '🟦',
-    category: ['办公', '协作', '精选'],
-    tags: ['feishu', 'lark', '消息', '文档', '表格', '日历', '任务', '邮件'],
-    transport: 'cli',
-    source: 'Lark CLI',
-    sourcePath: 'connectors/lark/',
-    sourceUrl: 'https://open.larksuite.com/document/mcp_open_tools/feishu-cli-let-ai-actually-do-your-work-in-feishu',
-    status: 'available',
-    capabilities: [
-      'message.send', 'message.search', 'message.reply',
-      'chat.create', 'chat.list', 'file.upload', 'card.send',
-      'document.read', 'document.create', 'document.edit',
-      'sheet.read', 'sheet.write', 'sheet.create',
-      'base.read', 'base.write',
-      'calendar.list', 'calendar.create', 'calendar.search',
-      'task.create', 'task.list', 'task.update',
-      'mail.send', 'mail.read', 'mail.search',
-      'contact.search', 'contact.lookup',
-      'drive.upload', 'drive.download', 'drive.list',
-      'wiki.read', 'wiki.search',
-      'vc.list', 'vc.search',
-      'approval.list', 'approval.create',
-      'attendance.record',
-      'okr.list', 'okr.update',
-      'minutes.search', 'minutes.read',
-    ],
-    runtime: { transport: 'cli', command: 'lark' },
-    install: { requirements: { commands: ['lark'] } },
-    provider: { name: 'official' },
-  },
-  {
-    id: 'github',
-    type: 'connector',
-    name: 'GitHub',
-    description: 'GitHub 仓库、Issue、PR 管理能力',
-    icon: '🐙',
-    category: ['开发', '精选'],
-    tags: ['github', 'git', 'repo'],
-    transport: 'mcp',
-    source: 'DSH MCP Client',
-    sourcePath: 'core/adapters/mcp-adapter.ts',
-    sourceUrl: 'https://github.com/modelcontextprotocol/servers',
-    status: 'available',
-    capabilities: ['repo.search', 'issue.create', 'pr.review'],
-    runtime: { transport: 'mcp', serverName: 'github-mcp' },
-    provider: { name: 'official' },
-  },
-  {
-    id: 'gmail',
-    type: 'connector',
-    name: 'Gmail',
-    description: 'Gmail 邮件读取与发送',
-    icon: '✉️',
-    category: ['办公'],
-    tags: ['gmail', 'email', 'mail'],
-    transport: 'api',
-    source: 'Gmail API',
-    sourcePath: 'core/adapters/api-adapter.ts',
-    sourceUrl: 'https://developers.google.com/gmail/api',
-    status: 'available',
-    capabilities: ['mail.send', 'mail.read', 'mail.search'],
-    runtime: { transport: 'api', endpoint: 'https://gmail.googleapis.com' },
-    provider: { name: 'official' },
-  },
-  {
-    id: 'notion',
-    type: 'connector',
-    name: 'Notion',
-    description: 'Notion 文档与数据库操作',
-    icon: '📝',
-    category: ['办公', '效率工具'],
-    tags: ['notion', 'doc'],
-    transport: 'api',
-    source: 'Notion API',
-    sourcePath: 'core/adapters/api-adapter.ts',
-    sourceUrl: 'https://developers.notion.com/',
-    status: 'available',
-    capabilities: ['page.read', 'page.write', 'db.query'],
-    runtime: { transport: 'api', endpoint: 'https://api.notion.com' },
-    provider: { name: 'official' },
-  },
+// Connector manifests (loaded at build time via resolveJsonModule)
+import feishuManifest from './connectors/feishu/manifest.json'
+import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
 
+// ===== Manifest registry =====
+const manifests: ConnectorManifest[] = [
+  feishuManifest as unknown as ConnectorManifest,
+]
+
+// ===== Recipe registry =====
+const recipes: unknown[] = [
+  feishuRecipe,
 ]
 
 // ===== Plugin Definition =====
@@ -115,9 +53,54 @@ export const name = 'dsh-capability-center'
 export const inject = ['webServer']
 
 export function apply(ctx: Context) {
-  // --- Create adapters ---
-  // SkillAdapter: query the default Agent preset's standing scope so discovery
-  // includes global, user, bundled, and preset-contributed skills.
+  const logger = ctx.logger('dsh-capability-center')
+
+  // --- Validate recipes at startup ---
+  for (const recipe of recipes) {
+    const result = validateRecipe(recipe)
+    if (!result.ok) {
+      logger.error(`Recipe validation failed: ${result.errors.join('; ')}`)
+    } else if (result.warnings.length > 0) {
+      logger.warn(`Recipe warnings: ${result.warnings.join('; ')}`)
+    }
+  }
+
+  // --- Create catalog store (loads manifests) ---
+  const catalogStore = new JsonCatalogStore()
+  catalogStore.loadManifests(manifests)
+
+  // --- Create runtime store (persists to DSH_HOME) ---
+  const dshHome = process.env.DSH_HOME || `${process.env.HOME || process.env.USERPROFILE}/.dsh`
+  const runtimeStore = new JsonRuntimeStore(dshHome)
+  // Load asynchronously — don't block startup
+  runtimeStore.load().catch((err) => {
+    logger.warn(`Failed to load runtime store: ${err}`)
+  })
+
+  // --- Create provider registry ---
+  const providerRegistry = new ProviderRegistry()
+
+  // Register dsh-im L0 provider
+  const dshImService = ctx.get('dshIm')
+  const dshImVersion = detectPackageVersion(ctx, '@xmanrui/dsh-im')
+  if (dshImService || dshImVersion) {
+    const dshImProvider = createDshImL0Provider({
+      host: ctx,
+      packageVersion: dshImVersion,
+    })
+    providerRegistry.register(dshImProvider).catch((err) => {
+      logger.warn(`Failed to register dsh-im provider: ${err}`)
+    })
+  }
+
+  // --- Create aggregator ---
+  const aggregator = new ConnectionAggregator(catalogStore, runtimeStore, providerRegistry)
+
+  // --- Create executor registry ---
+  const executorRegistry = new ExecutorRegistry()
+  registerBuiltinExecutors(executorRegistry)
+
+  // --- Keep existing adapters for skill/MCP discovery ---
   const agentPresets = ctx.get('agentPresets') as
     | { standingKeyFor(id?: string): Promise<object> }
     | undefined
@@ -125,36 +108,19 @@ export function apply(ctx: Context) {
     ctx.get('skills'),
     agentPresets ? () => agentPresets.standingKeyFor() : undefined,
   )
-  // MCPAdapter: delegates to dsh-mcp-client plugin + reads ~/.dsh/mcp.json.
-  // Uses Cordis fibers for real connect/disconnect (same as dsh-skills-mcp-manager).
   const mcpAdapter = new DefaultMCPAdapter(undefined, ctx)
-  // CLIAdapter: spawns CLI subprocesses (lark, etc.) for detect/install/auth/execute.
-  const cliAdapter = new DefaultCLIAdapter()
-  // IMRecommendationAdapter: recommends dsh-im for IM capabilities.
-  const imAdapter = new DefaultIMRecommendationAdapter(ctx)
 
-  // --- Create catalog and register providers ---
-  const catalog = new CapabilityCatalog()
-  const officialProvider = new OfficialProvider()
-  for (const cap of builtinCapabilities) {
-    officialProvider.register(cap)
-  }
-  catalog.registerProvider(officialProvider)
-
-  // IM is discovered live by CapabilityRegistry.list(), so installation state
-  // stays current instead of being captured once during plugin startup.
-
-  // --- Create registry ---
-  const registry = new CapabilityRegistry(
-    catalog,
+  // --- Register HTTP routes (hardened) ---
+  registerRoutes(ctx, {
+    aggregator,
+    catalogStore,
+    runtimeStore,
+    providerRegistry,
+    executorRegistry,
+    recipes,
     skillAdapter,
     mcpAdapter,
-    cliAdapter,
-    imAdapter,
-  )
-
-  // --- Register HTTP routes ---
-  registerRoutes(ctx, { registry, catalog })
+  })
 
   // Dispose live MCP fibers when the plugin unloads.
   ctx.effect(
@@ -162,5 +128,30 @@ export function apply(ctx: Context) {
     'capability-center: MCP teardown',
   )
 
-  ctx.logger('dsh-capability-center').info('Capability Center host plugin loaded')
+  logger.info('Capability Center V0.1 host plugin loaded')
+}
+
+// ===== Helpers =====
+
+/**
+ * Detect if a package is installed in the DSH profile and return its version.
+ * Uses the composition inventory if available; falls back to undefined.
+ */
+function detectPackageVersion(ctx: Context, packageName: string): string | undefined {
+  try {
+    // Try reading from the composition's package.json
+    const fs = require('node:fs')
+    const path = require('node:path')
+    const dshHome = process.env.DSH_HOME || `${process.env.HOME || process.env.USERPROFILE}/.dsh`
+    const profilePkg = path.join(dshHome, 'profiles', 'web', 'package.json')
+    if (fs.existsSync(profilePkg)) {
+      const pkg = JSON.parse(fs.readFileSync(profilePkg, 'utf-8'))
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+      const version = deps[packageName]
+      if (version) return version.replace(/[\^~]/, '')
+    }
+  } catch {
+    // Ignore — detection is best-effort
+  }
+  return undefined
 }
