@@ -50,9 +50,9 @@
           "with": {
             "expression": {
               "any": [
-                { "equals": { "path": "auth-status.json.status", "value": "logged_in" } },
-                { "equals": { "path": "auth-status.json.status", "value": "ready" } },
-                { "in": { "path": "auth-status.json.status", "values": ["logged_in", "ready", "needs_refresh"] } }
+                { "equals": { "path": "auth-status.json.identities.user.status", "value": "logged_in" } },
+                { "equals": { "path": "auth-status.json.identities.user.status", "value": "ready" } },
+                { "equals": { "path": "auth-status.json.identities.user.status", "value": "needs_refresh" } }
               ]
             },
             "message": "飞书 CLI 未登录。请运行 lark-cli auth login 完成认证。"
@@ -64,7 +64,7 @@
           "when": {
             "all": [
               { "exists": { "path": "auth-status.json" } },
-              { "not": { "equals": { "path": "auth-status.json.status", "value": "logged_out" } } }
+              { "not": { "equals": { "path": "auth-status.json.identities.user.status", "value": "logged_out" } } }
             ]
           },
           "with": {
@@ -97,9 +97,9 @@
           "with": {
             "expression": {
               "any": [
-                { "equals": { "path": "recheck-auth.json.status", "value": "logged_in" } },
-                { "equals": { "path": "recheck-auth.json.status", "value": "ready" } },
-                { "equals": { "path": "recheck-auth.json.status", "value": "needs_refresh" } }
+                { "equals": { "path": "recheck-auth.json.identities.user.status", "value": "logged_in" } },
+                { "equals": { "path": "recheck-auth.json.identities.user.status", "value": "ready" } },
+                { "equals": { "path": "recheck-auth.json.identities.user.status", "value": "needs_refresh" } }
               ]
             },
             "message": "飞书 CLI 认证已失效，需要重新登录。"
@@ -137,8 +137,8 @@
           "with": {
             "expression": {
               "any": [
-                { "equals": { "path": "verify-after-login.json.status", "value": "logged_in" } },
-                { "equals": { "path": "verify-after-login.json.status", "value": "ready" } }
+                { "equals": { "path": "verify-after-login.json.identities.user.status", "value": "logged_in" } },
+                { "equals": { "path": "verify-after-login.json.identities.user.status", "value": "ready" } }
               ]
             },
             "message": "登录后认证状态仍不正常"

@@ -1,16 +1,16 @@
 /**
- * DSH Capability Center — Host-side Cordis Plugin Entry (V0.1)
+ * DSH Capability Center — Host-side Cordis Plugin Entry (V0.2)
  *
- * Data-driven: connector definitions are loaded from manifest data,
- * not hardcoded in source. The CLI adapter reads command templates
- * from manifests. The IM adapter detects the real dshIm service.
+ * V0.2: Recipe Runtime integrated.
+ * - RecipeEngine executes recipe steps (executable.resolve, command.json,
+ *   assert.expression, terminal.interactive)
+ * - connect() runs the recipe's "connect" intent
+ * - verify() runs the recipe's "verify" intent
+ * - reauthorize() runs the recipe's "reauthorize" intent
+ * - If a step returns waiting_user, the challenge is returned to the UI
  *
- * Caching: detection results are persisted to
- * ~/.dsh/capability-center/cache.json and loaded on startup.
- * list() returns cached data instantly; background refresh keeps it fresh.
- *
- * The UI (client half) is unchanged — it uses the original Capability[]
- * API format. Only the backend logic has been upgraded.
+ * V0.1: Data-driven backend + caching layer (still active).
+ * UI unchanged — uses the original Capability[] API format.
  */
 import { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
@@ -24,6 +24,16 @@ import { DefaultMCPAdapter } from './core/adapters/mcp-adapter'
 import { DefaultCLIAdapter, type CliConnectorManifest } from './core/adapters/cli-adapter'
 import { DefaultIMRecommendationAdapter } from './core/adapters/im-recommendation-adapter'
 import { registerRoutes } from './routes'
+// V0.2: Recipe Runtime
+import { ExecutorRegistry } from './core/recipe/executor-registry'
+import { registerBuiltinExecutors } from './core/recipe/builtin-executors'
+import { terminalInteractiveExecutor } from './core/recipe/terminal-interactive-executor'
+import { RecipeEngine } from './core/recipe/engine'
+import { ChildProcessHost } from './core/recipe/child-process-host'
+import type { RecipeDocument } from './core/domain/types'
+// Recipe data files (data-driven, not hardcoded)
+import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
+import githubRecipe from './connectors/github/github-pat.recipe.json'
 
 // ===== Connector manifest data (data-driven, not hardcoded) =====
 const cliManifests: CliConnectorManifest[] = [
@@ -79,6 +89,12 @@ const cliManifests: CliConnectorManifest[] = [
   },
 ]
 
+// ===== Recipe documents (data-driven) =====
+const recipes = new Map<string, RecipeDocument>([
+  ['feishu', feishuRecipe as unknown as RecipeDocument],
+  ['github', githubRecipe as unknown as RecipeDocument],
+])
+
 // ===== Plugin Definition =====
 export const name = 'dsh-capability-center'
 export const inject = ['webServer']
@@ -104,8 +120,6 @@ export function apply(ctx: Context) {
   // --- Create catalog and register providers ---
   const catalog = new CapabilityCatalog()
   const officialProvider = new OfficialProvider()
-
-  // Build static capabilities from manifest data (not hardcoded)
   const builtinCapabilities: Capability[] = cliManifests.map((m) => ({
     id: m.id,
     type: 'connector' as const,
@@ -128,7 +142,14 @@ export function apply(ctx: Context) {
   }
   catalog.registerProvider(officialProvider)
 
-  // --- Create registry with cache ---
+  // --- V0.2: Create Recipe Engine ---
+  const executorRegistry = new ExecutorRegistry()
+  registerBuiltinExecutors(executorRegistry)
+  executorRegistry.register(terminalInteractiveExecutor)
+  const childProcessHost = new ChildProcessHost()
+  const recipeEngine = new RecipeEngine(executorRegistry, childProcessHost)
+
+  // --- Create registry with cache + recipe engine ---
   const registry = new CapabilityRegistry(
     catalog,
     skillAdapter,
@@ -136,11 +157,12 @@ export function apply(ctx: Context) {
     cliAdapter,
     imAdapter,
     cacheFile,
+    recipeEngine,
+    recipes,
   )
 
   // --- Load cache on startup, then trigger background refresh ---
   registry.loadCache().then(() => {
-    // First refresh in background — populates real status (CLI auth, skills, MCP)
     registry.refreshInBackground().catch(() => {})
   }).catch(() => {})
 
@@ -153,5 +175,5 @@ export function apply(ctx: Context) {
     'capability-center: MCP teardown',
   )
 
-  ctx.logger('dsh-capability-center').info('Capability Center host plugin loaded (V0.1 cached)')
+  ctx.logger('dsh-capability-center').info('Capability Center host plugin loaded (V0.2 recipe runtime)')
 }

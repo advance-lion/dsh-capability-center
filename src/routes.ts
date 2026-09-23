@@ -1,6 +1,7 @@
 /** HTTP routes exposed to the browser half. */
 import type { CapabilityCatalog } from './core/capability/catalog'
 import type { CapabilityRegistry } from './core/capability/registry'
+import { RecipeWaitingError, RecipeFailedError } from './core/capability/registry'
 
 export interface RouteContext {
   registry: CapabilityRegistry
@@ -67,6 +68,10 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
               sendJson(res, 200, await registry.health(id))
               return
             }
+            if (req.method === 'GET' && action === 'verify') {
+              sendJson(res, 200, await registry.verify(id))
+              return
+            }
 
             const mutations: Record<string, (id: string) => Promise<void>> = {
               install: (value) => registry.install(value),
@@ -75,6 +80,7 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
               disable: (value) => registry.disable(value),
               connect: (value) => registry.connect(value),
               disconnect: (value) => registry.disconnect(value),
+              reauthorize: (value) => registry.reauthorize(value),
             }
             if (req.method === 'POST' && action && mutations[action]) {
               await mutations[action](id)
@@ -84,6 +90,27 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
 
             sendJson(res, 404, { error: 'not found' })
           } catch (error) {
+            // RecipeWaitingError: recipe needs user interaction
+            if (error instanceof RecipeWaitingError) {
+              sendJson(res, 202, {
+                ok: false,
+                waiting: true,
+                challenge: error.challenge,
+                recipeId: error.recipeId,
+                intent: error.intent,
+                checkpoint: error.checkpoint,
+              })
+              return
+            }
+            // RecipeFailedError: recipe execution failed
+            if (error instanceof RecipeFailedError) {
+              sendJson(res, 500, {
+                error: error.message,
+                code: error.code,
+                retryable: error.retryable,
+              })
+              return
+            }
             sendJson(res, 500, {
               error: error instanceof Error ? error.message : String(error),
             })
