@@ -30,7 +30,10 @@ import { registerBuiltinExecutors } from './core/recipe/builtin-executors'
 import { terminalInteractiveExecutor } from './core/recipe/terminal-interactive-executor'
 import { RecipeEngine } from './core/recipe/engine'
 import { ChildProcessHost } from './core/recipe/child-process-host'
-import type { RecipeDocument } from './core/domain/types'
+import type { RecipeDocument, CapabilityProvider } from './core/domain/types'
+// V0.3: Provider SPI
+import { createDshImL1Provider } from './core/provider/adapters/dsh-im-l1'
+import { createMcpProvider } from './core/provider/adapters/mcp-provider'
 // Recipe data files (data-driven, not hardcoded)
 import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
 import githubRecipe from './connectors/github/github-pat.recipe.json'
@@ -149,7 +152,13 @@ export function apply(ctx: Context) {
   const childProcessHost = new ChildProcessHost()
   const recipeEngine = new RecipeEngine(executorRegistry, childProcessHost)
 
-  // --- Create registry with cache + recipe engine ---
+  // --- V0.3: Create Providers ---
+  const providers: CapabilityProvider[] = [
+    createDshImL1Provider({ host: ctx, packageVersion: '4.21.2' }),
+    createMcpProvider(mcpAdapter),
+  ]
+
+  // --- Create registry with cache + recipe engine + providers ---
   const registry = new CapabilityRegistry(
     catalog,
     skillAdapter,
@@ -159,6 +168,7 @@ export function apply(ctx: Context) {
     cacheFile,
     recipeEngine,
     recipes,
+    providers,
   )
 
   // --- Load cache on startup, then trigger background refresh ---

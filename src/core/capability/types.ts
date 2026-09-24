@@ -10,7 +10,7 @@
 export type CapabilityType = 'skill' | 'connector' | 'partner'
 
 /** Connector transport — how the connector talks to the external system. */
-export type ConnectorTransport = 'mcp' | 'cli' | 'api' | 'browser'
+export type ConnectorTransport = 'mcp' | 'cli' | 'api' | 'browser' | 'bot'
 
 /** Lifecycle status of a capability instance on this machine. */
 export type CapabilityStatus =

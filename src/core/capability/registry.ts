@@ -27,7 +27,7 @@ import type { MCPAdapter } from '../adapters/mcp-adapter'
 import type { CLIAdapter } from '../adapters/cli-adapter'
 import type { IMRecommendationAdapter } from '../adapters/im-recommendation-adapter'
 import type { RecipeEngine, RecipeRunResult } from '../recipe/engine'
-import type { RecipeDocument } from '../domain/types'
+import type { RecipeDocument, CapabilityProvider } from '../domain/types'
 
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -79,6 +79,7 @@ export class CapabilityRegistry {
     cacheFile?: string,
     private recipeEngine?: RecipeEngine,
     private recipes?: Map<string, RecipeDocument>,
+    private providers?: CapabilityProvider[],
   ) {
     this.cacheFile = cacheFile
   }
@@ -122,21 +123,26 @@ export class CapabilityRegistry {
     if (this.refreshing) return
     this.refreshing = true
     try {
-      const [skillResult, mcpResult, cliResult, imResult] = await Promise.allSettled([
+      const [skillResult, mcpResult, cliResult, imResult, providerResults] = await Promise.allSettled([
         this.skillAdapter?.discover().catch(() => []) ?? Promise.resolve([]),
         this.mcpAdapter?.discover().catch(() => []) ?? Promise.resolve([]),
         this.cliAdapter?.discover().catch(() => []) ?? Promise.resolve([]),
         this.imAdapter?.getRecommendation().catch(() => undefined),
+        // V0.3: also discover provider connections
+        this.discoverProviderConnections(),
       ])
       const skillCaps = skillResult.status === 'fulfilled' ? skillResult.value : []
       const mcpCaps = mcpResult.status === 'fulfilled' ? mcpResult.value : []
       const cliCaps = cliResult.status === 'fulfilled' ? cliResult.value : []
       const imCap = imResult.status === 'fulfilled' ? imResult.value : undefined
+      const providerCaps = providerResults.status === 'fulfilled' ? providerResults.value : []
       const merged = new Map<string, Capability>()
       for (const cap of skillCaps) merged.set(cap.id, cap)
       for (const cap of mcpCaps) merged.set(cap.id, cap)
       for (const cap of cliCaps) merged.set(cap.id, cap)
       if (imCap) merged.set(imCap.id, imCap)
+      // V0.3: merge provider-discovered connections
+      for (const cap of providerCaps) merged.set(cap.id, cap)
       this.discoveredCache = [...merged.values()]
       for (const cap of this.discoveredCache) {
         this.statusMap.set(cap.id, cap.status)
@@ -146,6 +152,47 @@ export class CapabilityRegistry {
     } finally {
       this.refreshing = false
     }
+  }
+
+  /**
+   * V0.3: Discover connections from registered providers.
+   * Projects ProviderConnectionSummary[] into Capability[] format.
+   */
+  private async discoverProviderConnections(): Promise<Capability[]> {
+    if (!this.providers?.length) return []
+    const results: Capability[] = []
+    for (const provider of this.providers) {
+      try {
+        const connections = await provider.listConnections()
+        for (const conn of connections) {
+          results.push({
+            id: conn.externalInstanceId,
+            type: 'connector',
+            name: conn.displayName,
+            description: `Provider: ${conn.methodId}`,
+            icon: '🤖',
+            category: ['办公'],
+            tags: [conn.methodId, conn.integrationId],
+            transport: 'bot',
+            source: `Provider: ${conn.integrationId}`,
+            status: this.observedToCapabilityStatus(conn.observedState),
+            capabilities: conn.activeCapabilities || [],
+            runtime: { transport: 'bot' },
+            provider: { name: conn.integrationId },
+          })
+        }
+      } catch { /* provider failed, skip */ }
+    }
+    return results
+  }
+
+  /** Map ObservedState to CapabilityStatus for the UI. */
+  private observedToCapabilityStatus(observed: string): CapabilityStatus {
+    if (observed === 'connected') return 'connected'
+    if (observed === 'reauth_required' || observed === 'revoked') return 'expired'
+    if (observed === 'disconnected' || observed === 'not_configured') return 'available'
+    if (observed === 'provider_unavailable') return 'error'
+    return 'available'
   }
 
   // ── Read operations (cache-first) ────────────────────────────
