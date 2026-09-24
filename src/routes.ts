@@ -2,6 +2,7 @@
 import type { CapabilityCatalog } from './core/capability/catalog'
 import type { CapabilityRegistry } from './core/capability/registry'
 import { RecipeWaitingError, RecipeFailedError } from './core/capability/registry'
+import { importLedger, type LedgerEntry } from './core/catalog/ledger-importer'
 
 export interface RouteContext {
   registry: CapabilityRegistry
@@ -12,6 +13,19 @@ function sendJson(res: any, status: number, data: unknown): void {
   res.statusCode = status
   res.setHeader('content-type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(data))
+}
+
+/** Read request body as string. */
+function readBody(req: any): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    req.on('data', (chunk: Buffer) => {
+      data += chunk.toString('utf-8')
+      if (data.length > 1024 * 1024) reject(new Error('Body too large'))
+    })
+    req.on('end', () => resolve(data))
+    req.on('error', reject)
+  })
 }
 
 /** Register the /api/capability-center route family. */
@@ -33,6 +47,26 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
             .filter(Boolean)
 
           try {
+            // V0.5: Import ledger entries
+            if (req.method === 'POST' && segments[0] === 'import-ledger') {
+              const body = await readBody(req)
+              const entries = JSON.parse(body) as LedgerEntry[]
+              if (!Array.isArray(entries)) {
+                sendJson(res, 400, { error: 'Expected JSON array of ledger entries' })
+                return
+              }
+              const imported = importLedger(entries)
+              sendJson(res, 200, {
+                imported: imported.length,
+                connectors: imported.map((c) => ({
+                  id: c.manifest.id,
+                  name: c.manifest.name,
+                  recipeId: c.recipe.id,
+                })),
+              })
+              return
+            }
+
             if (req.method === 'GET' && segments[0] === 'list') {
               const type = url.searchParams.get('type')
               const category = url.searchParams.get('category')
