@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "feishu-cli-bot",
+  "version": "1.0.0",
+  "integrationId": "feishu",
+  "methodId": "feishu-cli-bot",
+  "platforms": ["win32", "darwin", "linux"],
+  "source": { "level": "community", "url": "https://github.com/advance-lion/dsh-capability-center" },
+  "intents": {
+    "connect": {
+      "steps": [
+        {
+          "id": "bot-auth", "type": "command.json",
+          "with": {
+            "command": "lark-cli auth status --json --verify",
+            "timeoutMs": 15000, "stdoutMaxBytes": 65536,
+            "select": { "identity": "identity", "verified": "verified", "botVerified": "identities.bot.verified" }
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-bot-verified", "type": "assert.expression",
+          "with": {
+            "expression": { "all": [
+              { "equals": { "path": "bot-auth.exitCode", "value": 0 } },
+              { "equals": { "path": "bot-auth.json.identity", "value": "bot" } },
+              { "equals": { "path": "bot-auth.json.verified", "value": true } },
+              { "equals": { "path": "bot-auth.json.botVerified", "value": true } }
+            ] },
+            "message": "飞书机器人身份未通过服务端验证；不使用用户登录代替机器人配置，也不改变现有凭据。"
+          }
+        }
+      ]
+    },
+    "verify": {
+      "steps": [
+        {
+          "id": "bot-auth", "type": "command.json",
+          "with": {
+            "command": "lark-cli auth status --json --verify",
+            "timeoutMs": 15000, "stdoutMaxBytes": 65536,
+            "select": { "identity": "identity", "verified": "verified", "botVerified": "identities.bot.verified" }
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-bot-verified", "type": "assert.expression",
+          "with": {
+            "expression": { "all": [
+              { "equals": { "path": "bot-auth.exitCode", "value": 0 } },
+              { "equals": { "path": "bot-auth.json.identity", "value": "bot" } },
+              { "equals": { "path": "bot-auth.json.verified", "value": true } },
+              { "equals": { "path": "bot-auth.json.botVerified", "value": true } }
+            ] },
+            "message": "飞书机器人验证失败或不可确认。"
+          }
+        }
+      ]
+    }
+  }
+}

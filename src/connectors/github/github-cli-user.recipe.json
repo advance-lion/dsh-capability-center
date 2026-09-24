@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "github-cli-user",
+  "version": "1.0.0",
+  "integrationId": "github",
+  "methodId": "github-cli-user",
+  "platforms": ["win32", "darwin", "linux"],
+  "source": { "level": "community", "url": "https://github.com/advance-lion/dsh-capability-center" },
+  "intents": {
+    "connect": {
+      "steps": [
+        {
+          "id": "current-user", "type": "command.json",
+          "with": {
+            "command": "gh api --hostname github.com --method GET user",
+            "timeoutMs": 15000, "stdoutMaxBytes": 65536,
+            "select": { "accountId": "id", "accountType": "type" }
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-authenticated", "type": "assert.expression",
+          "with": {
+            "expression": { "all": [
+              { "equals": { "path": "current-user.exitCode", "value": 0 } },
+              { "equals": { "path": "current-user.json.accountType", "value": "User" } },
+              { "exists": { "path": "current-user.json.accountId" } },
+              { "not": { "in": { "path": "current-user.json.accountId", "values": [false, 0, ""] } } }
+            ] },
+            "message": "GitHub 用户身份未验证；不自动登录、切换账号或扩大权限。"
+          }
+        }
+      ]
+    },
+    "verify": {
+      "steps": [
+        {
+          "id": "current-user", "type": "command.json",
+          "with": {
+            "command": "gh api --hostname github.com --method GET user",
+            "timeoutMs": 15000, "stdoutMaxBytes": 65536,
+            "select": { "accountId": "id", "accountType": "type" }
+          },
+          "persist": ["json", "exitCode"]
+        },
+        {
+          "id": "assert-authenticated", "type": "assert.expression",
+          "with": {
+            "expression": { "all": [
+              { "equals": { "path": "current-user.exitCode", "value": 0 } },
+              { "equals": { "path": "current-user.json.accountType", "value": "User" } },
+              { "exists": { "path": "current-user.json.accountId" } },
+              { "not": { "in": { "path": "current-user.json.accountId", "values": [false, 0, ""] } } }
+            ] },
+            "message": "GitHub 用户身份验证失败或不可确认。"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -156,7 +156,7 @@ export function apply(ctx: Context) {
 
   // --- V0.3: Create Providers ---
   const providers: CapabilityProvider[] = [
-    createDshImL1Provider({ host: ctx, packageVersion: '4.21.2' }),
+    createDshImL1Provider({ dshImService: ctx.get('dshIm') as any, packageVersion: '4.21.2' }),
     createMcpProvider(mcpAdapter),
   ]
 

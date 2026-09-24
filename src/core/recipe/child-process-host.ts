@@ -1,61 +1,65 @@
 /**
- * Child Process Host — provides the shell/subprocess interface that
- * Step Executors expect, using Node.js child_process directly.
- *
- * In the static plugin (real Node.js process), this is the concrete
- * implementation. In a dynamic plugin sandbox, the same interface is
- * provided by ctx.get('shell').
+ * Static Node host for reviewed repository recipes. A dynamic Host must use
+ * the session-policy-aware shell/subprocess services, not import this class.
+ * Node exec cancellation targets the spawned shell; full descendant-tree
+ * termination is NOT guaranteed here and remains a deployment acceptance gate.
  */
-
-import { execSync, exec as execCb } from 'node:child_process'
+import { execFile, exec as execCb } from 'node:child_process'
 
 export interface ShellSpec {
   command: string
   timeoutMs?: number
   stdoutMaxBytes?: number
+  signal?: AbortSignal
 }
-
 export interface ShellResult {
   stdout: { text: string; truncated?: boolean }
-  stderr: { text: string }
-  exitCode: number
+  stderr: { text: string; truncated?: boolean }
+  exitCode: number | null
+  timedOut: boolean
+  aborted: boolean
 }
 
 export class ChildProcessHost {
   readonly subprocess = {
-    async resolveExecutable(cmd: string): Promise<string | null> {
-      const isWindows = process.platform === 'win32'
-      const detectCmd = isWindows ? `where ${cmd} 2>nul` : `which ${cmd} 2>/dev/null`
-      try {
-        const out = execSync(detectCmd, { encoding: 'utf-8', timeout: 5000, windowsHide: true })
-        const path = out.trim().split('\n')[0]
-        return path || null
-      } catch {
-        return null
-      }
+    async resolveExecutable(command: string, signal?: AbortSignal): Promise<string | null> {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._+-]*$/.test(command)) throw new Error('Invalid executable name')
+      if (signal?.aborted) throw new Error('Executable lookup cancelled')
+      return new Promise<string | null>((resolve, reject) => {
+        execFile(process.platform === 'win32' ? 'where.exe' : 'which', [command],
+          { encoding: 'utf8', timeout: 5000, maxBuffer: 16384, windowsHide: true, signal },
+          (error, stdout) => {
+            if (signal?.aborted) { reject(new Error('Executable lookup cancelled')); return }
+            if (!error) { resolve(stdout.trim().split(/\r?\n/)[0] || null); return }
+            if (error.code === 1) { resolve(null); return }
+            reject(new Error('Executable lookup could not complete'))
+          },
+        )
+      })
     },
   }
 
   readonly shell = {
-    async resolve(req: ShellSpec): Promise<ShellSpec> {
-      return req
+    async resolve(request: ShellSpec): Promise<ShellSpec> {
+      return { ...request }
     },
-
     async run(spec: ShellSpec): Promise<ShellResult> {
+      const { signal, command, timeoutMs = 15000, stdoutMaxBytes = 524288 } = spec
+      if (signal?.aborted) return { stdout: { text: '' }, stderr: { text: '' }, exitCode: null, timedOut: false, aborted: true }
       return new Promise((resolve) => {
-        execCb(
-          spec.command,
-          {
-            encoding: 'utf-8',
-            timeout: spec.timeoutMs ?? 15000,
-            maxBuffer: spec.stdoutMaxBytes ?? 524288,
-            windowsHide: true,
-          },
-          (err, stdout, stderr) => {
+        execCb(command, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: stdoutMaxBytes, windowsHide: true, signal },
+          (error, stdout, stderr) => {
+            // Node may report string infrastructure codes even though this
+            // @types/node exec callback narrows code to number. Validate it at runtime.
+            const code: unknown = error?.code
+            const truncated = code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+            const aborted = signal?.aborted === true || code === 'ABORT_ERR'
+            const timedOut = !!error?.killed && !aborted && !truncated
             resolve({
-              stdout: { text: stdout || '' },
-              stderr: { text: stderr || '' },
-              exitCode: err ? (err as any).status ?? 1 : 0,
+              stdout: { text: stdout || '', truncated },
+              stderr: { text: stderr || '', truncated },
+              exitCode: aborted || timedOut ? null : !error ? 0 : typeof code === 'number' ? code : null,
+              timedOut, aborted,
             })
           },
         )

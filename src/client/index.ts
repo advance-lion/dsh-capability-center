@@ -58,14 +58,17 @@ export function apply(ctx: ClientContext): void {
   )
 
   ctx.effect(
-    () => ctx.slots.register(
-      {
-        name: 'sidebar.panellist' as never,
-        id: PANEL_ID,
-        order: -100,
-        label: () => ctx.locale.bind(NS)('title'),
-      } as never,
-      CapabilityCenterIcon as ComponentType<any> as never,
+    () => ctx.slots.inject(
+      'sidebar.panellist' as never,
+      () => ctx.slots.register(
+        {
+          name: 'sidebar.panellist' as never,
+          id: PANEL_ID,
+          order: -100,
+          label: () => ctx.locale.bind(NS)('title'),
+        } as never,
+        CapabilityCenterIcon as ComponentType<any> as never,
+      ),
     ),
     'capability-center: sidebar entry',
   )
@@ -73,9 +76,12 @@ export function apply(ctx: ClientContext): void {
   // `main` is keyed and currently absent from the generic inject key union in
   // the rc type package; runtime inspection confirms this exact contract.
   ctx.effect(
-    () => ctx.slots.register(
-      { name: 'main' as never, key: PANEL_ID, locale: NS } as never,
-      CapabilityCenterPanel as never,
+    () => ctx.slots.inject(
+      'main' as never,
+      () => ctx.slots.register(
+        { name: 'main' as never, key: PANEL_ID, locale: NS } as never,
+        CapabilityCenterPanel as never,
+      ),
     ),
     'capability-center: main panel',
   )

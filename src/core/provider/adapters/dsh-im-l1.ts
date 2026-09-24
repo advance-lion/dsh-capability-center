@@ -21,7 +21,7 @@ import type {
 import { normalizeObservedState, deriveHealthState } from '../../domain/status'
 
 export interface DshImL1Context {
-  host: unknown
+  dshImService?: DshImService
   packageVersion?: string
 }
 
@@ -33,9 +33,7 @@ interface DshImService {
 }
 
 export function createDshImL1Provider(ctx: DshImL1Context): CapabilityProvider {
-  const { host, packageVersion } = ctx
-  const hostObj = host as Record<string, unknown>
-  const dshImService = hostObj['dshIm'] as DshImService | undefined
+  const { dshImService, packageVersion } = ctx
   const isInstalled = dshImService !== undefined || packageVersion !== undefined
 
   const descriptor: ProviderDescriptor = {
