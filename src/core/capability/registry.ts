@@ -27,7 +27,8 @@ import type { MCPAdapter } from '../adapters/mcp-adapter'
 import type { CLIAdapter } from '../adapters/cli-adapter'
 import type { IMRecommendationAdapter } from '../adapters/im-recommendation-adapter'
 import type { RecipeEngine, RecipeRunResult } from '../recipe/engine'
-import type { RecipeDocument, CapabilityProvider } from '../domain/types'
+import type { RecipeDocument, CapabilityProvider, ConnectionInstance } from '../domain/types'
+import type { JsonRuntimeStore } from '../runtime/json-store'
 
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -80,6 +81,7 @@ export class CapabilityRegistry {
     private recipeEngine?: RecipeEngine,
     private recipes?: Map<string, RecipeDocument>,
     private providers?: CapabilityProvider[],
+    private runtimeStore?: JsonRuntimeStore,
   ) {
     this.cacheFile = cacheFile
   }
@@ -370,12 +372,19 @@ export class CapabilityRegistry {
       // Derive status from step outputs
       const healthy = this.checkVerificationResult(result.stepOutputs)
       this.statusMap.set(capId, healthy ? 'connected' : 'expired')
+
+      // V0.4: Persist connection instance to runtime store
+      if (this.runtimeStore && healthy) {
+        this.persistInstance(capId, intent, result.stepOutputs)
+      } else if (this.runtimeStore && intent === 'disconnect') {
+        this.runtimeStore.remove(`recipe:${capId}:1.0.0`)
+      }
+
       this.refreshInBackground().catch(() => {})
       return
     }
 
     if (result.state === 'waiting_user') {
-      // Throw a structured error with the challenge info
       const c = result.challenge
       throw new RecipeWaitingError(
         {
@@ -396,6 +405,83 @@ export class CapabilityRegistry {
         result.error.code,
       )
     }
+  }
+
+  /**
+   * V0.4: Persist a connection instance from recipe step outputs.
+   */
+  private persistInstance(capId: string, intent: string, stepOutputs: Record<string, Record<string, unknown>>): void {
+    if (!this.runtimeStore) return
+    const recipe = this.findRecipe(capId)
+    if (!recipe) return
+
+    // Extract identity from step outputs (e.g. verify-identity.json)
+    let displayName = capId
+    let rawStatus: string | undefined
+    let safeMetadata: Record<string, string | number | boolean | null> = {}
+
+    for (const [stepId, output] of Object.entries(stepOutputs)) {
+      if (output.json && typeof output.json === 'object') {
+        const json = output.json as any
+        if (json.identities?.user?.name) displayName = json.identities.user.name
+        if (json.identities?.user?.status) rawStatus = json.identities.user.status
+        if (json.name) displayName = json.name
+        if (json.appId) safeMetadata.appId = json.appId
+        if (json.brand) safeMetadata.brand = json.brand
+      }
+    }
+
+    this.runtimeStore.upsertFromRecipe({
+      integrationId: recipe.integrationId,
+      methodId: recipe.methodId,
+      recipeVersionId: recipe.version,
+      displayName,
+      rawStatus,
+      connected: true,
+      safeMetadata,
+      activeCapabilities: ['message.send', 'message.receive'],
+    })
+  }
+
+  /**
+   * V0.4: List all connection instances for an integration.
+   */
+  async listInstances(integrationId?: string): Promise<ConnectionInstance[]> {
+    if (!this.runtimeStore) return []
+    const all = await this.runtimeStore.listInstances()
+    if (!integrationId) return all
+    return all.filter((i) => i.integrationId === integrationId)
+  }
+
+  /**
+   * V0.4: Pause a connection instance.
+   */
+  async pauseInstance(instanceId: string): Promise<void> {
+    if (!this.runtimeStore) return
+    // The JsonRuntimeStore doesn't have a pause method, but we can
+    // update the desiredState by removing and re-adding with 'paused'
+    // For now, just mark the capability as 'installed' (not connected)
+    this.statusMap.set(instanceId, 'installed')
+    this.refreshInBackground().catch(() => {})
+  }
+
+  /**
+   * V0.4: Resume a paused connection instance.
+   */
+  async resumeInstance(instanceId: string): Promise<void> {
+    if (!this.runtimeStore) return
+    this.statusMap.set(instanceId, 'connected')
+    this.refreshInBackground().catch(() => {})
+  }
+
+  /**
+   * V0.4: Revoke a connection instance (delete credentials).
+   */
+  async revokeInstance(instanceId: string): Promise<void> {
+    if (!this.runtimeStore) return
+    this.runtimeStore.remove(instanceId)
+    this.statusMap.delete(instanceId)
+    this.refreshInBackground().catch(() => {})
   }
 
   /**

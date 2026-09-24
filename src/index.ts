@@ -34,6 +34,8 @@ import type { RecipeDocument, CapabilityProvider } from './core/domain/types'
 // V0.3: Provider SPI
 import { createDshImL1Provider } from './core/provider/adapters/dsh-im-l1'
 import { createMcpProvider } from './core/provider/adapters/mcp-provider'
+// V0.4: Runtime store for connection instances
+import { JsonRuntimeStore } from './core/runtime/json-store'
 // Recipe data files (data-driven, not hardcoded)
 import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
 import githubRecipe from './connectors/github/github-pat.recipe.json'
@@ -158,7 +160,11 @@ export function apply(ctx: Context) {
     createMcpProvider(mcpAdapter),
   ]
 
-  // --- Create registry with cache + recipe engine + providers ---
+  // --- V0.4: Create Runtime Store for connection instances ---
+  const runtimeStore = new JsonRuntimeStore(dshHome)
+  runtimeStore.load().catch(() => {})
+
+  // --- Create registry with cache + recipe engine + providers + runtime ---
   const registry = new CapabilityRegistry(
     catalog,
     skillAdapter,
@@ -169,6 +175,7 @@ export function apply(ctx: Context) {
     recipeEngine,
     recipes,
     providers,
+    runtimeStore,
   )
 
   // --- Load cache on startup, then trigger background refresh ---

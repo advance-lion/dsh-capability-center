@@ -72,6 +72,11 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
               sendJson(res, 200, await registry.verify(id))
               return
             }
+            // V0.4: List connection instances for an integration
+            if (req.method === 'GET' && action === 'instances') {
+              sendJson(res, 200, { instances: await registry.listInstances(id) })
+              return
+            }
 
             const mutations: Record<string, (id: string) => Promise<void>> = {
               install: (value) => registry.install(value),
@@ -81,6 +86,10 @@ export function registerRoutes(ctx: any, routeContext: RouteContext): void {
               connect: (value) => registry.connect(value),
               disconnect: (value) => registry.disconnect(value),
               reauthorize: (value) => registry.reauthorize(value),
+              // V0.4: Instance management
+              pause: (value) => registry.pauseInstance(value),
+              resume: (value) => registry.resumeInstance(value),
+              revoke: (value) => registry.revokeInstance(value),
             }
             if (req.method === 'POST' && action && mutations[action]) {
               await mutations[action](id)
