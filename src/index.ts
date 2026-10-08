@@ -30,15 +30,13 @@ import { registerBuiltinExecutors } from './core/recipe/builtin-executors'
 import { terminalInteractiveExecutor } from './core/recipe/terminal-interactive-executor'
 import { RecipeEngine } from './core/recipe/engine'
 import { ChildProcessHost } from './core/recipe/child-process-host'
-import type { RecipeDocument, CapabilityProvider } from './core/domain/types'
+import type { CapabilityProvider } from './core/domain/types'
+import { builtinRecipeBindings } from './core/capability/recipe-bindings'
 // V0.3: Provider SPI
 import { createDshImL1Provider } from './core/provider/adapters/dsh-im-l1'
 import { createMcpProvider } from './core/provider/adapters/mcp-provider'
 // V0.4: Runtime store for connection instances
 import { JsonRuntimeStore } from './core/runtime/json-store'
-// Recipe data files (data-driven, not hardcoded)
-import feishuRecipe from './connectors/feishu/feishu-cli-user.recipe.json'
-import githubRecipe from './connectors/github/github-pat.recipe.json'
 
 // ===== Connector manifest data (data-driven, not hardcoded) =====
 const cliManifests: CliConnectorManifest[] = [
@@ -94,11 +92,8 @@ const cliManifests: CliConnectorManifest[] = [
   },
 ]
 
-// ===== Recipe documents (data-driven) =====
-const recipes = new Map<string, RecipeDocument>([
-  ['feishu', feishuRecipe as unknown as RecipeDocument],
-  ['github', githubRecipe as unknown as RecipeDocument],
-])
+// ===== Reviewed CLI method bindings (no PAT fallback or bot/user alias) =====
+const recipes = builtinRecipeBindings()
 
 // ===== Plugin Definition =====
 export const name = 'dsh-capability-center'
@@ -156,7 +151,7 @@ export function apply(ctx: Context) {
 
   // --- V0.3: Create Providers ---
   const providers: CapabilityProvider[] = [
-    createDshImL1Provider({ dshImService: ctx.get('dshIm') as any, packageVersion: '4.21.2' }),
+    createDshImL1Provider({ dshImService: ctx.get('dshIm') as any }),
     createMcpProvider(mcpAdapter),
   ]
 

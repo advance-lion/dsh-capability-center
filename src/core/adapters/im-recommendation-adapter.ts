@@ -12,24 +12,9 @@ export class DefaultIMRecommendationAdapter implements IMRecommendationAdapter {
 
   async isInstalled(): Promise<boolean> {
     if (!this.ctx) return false
-    if (this.ctx.get('dshIm') || this.ctx.get('dsh.im') || this.ctx.get('dsh.im.connect')) return true
-
-    const presets = this.ctx.get('agentPresets') as
-      | { compositionInventory(): Promise<Array<{ rows?: Array<Record<string, unknown>> }>> }
-      | undefined
-    if (!presets?.compositionInventory) return false
-
-    try {
-      const inventory = await presets.compositionInventory()
-      return inventory.some((preset) => preset.rows?.some((row) => {
-        const candidate = String(
-          row.name ?? row.moduleName ?? row.plugin ?? row.package ?? '',
-        ).toLowerCase()
-        return row.disabled !== true && candidate.includes('dsh-im')
-      }))
-    } catch {
-      return false
-    }
+    // A preset mentioning dsh-im is not a running service and cannot prove
+    // that any Feishu IM bot is connected. Only a live provider counts.
+    return this.ctx.get('dshIm') !== undefined
   }
 
   async getRecommendation(): Promise<Capability> {

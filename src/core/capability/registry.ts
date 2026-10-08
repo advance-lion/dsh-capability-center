@@ -94,9 +94,12 @@ export class CapabilityRegistry {
       const fs = await import('node:fs/promises')
       const content = await fs.readFile(this.cacheFile, 'utf-8')
       const data: CacheFile = JSON.parse(content)
-      this.discoveredCache = data.discovered || []
+      this.discoveredCache = Array.isArray(data.discovered)
+        ? data.discovered.filter(cap => !this.recipes?.has(cap.id) && cap.id !== 'lark-im') : []
       this.statusMap = new Map(Object.entries(data.statusMap || {}))
-      this.lastRefresh = data.lastRefresh || 0
+      // Cached identity or IM observations from another process are not proof.
+      for (const id of [...(this.recipes?.keys() ?? []), 'lark-im']) this.statusMap.delete(id)
+      this.lastRefresh = 0
     } catch { /* file doesn't exist yet */ }
   }
 
@@ -147,7 +150,20 @@ export class CapabilityRegistry {
       for (const cap of providerCaps) merged.set(cap.id, cap)
       this.discoveredCache = [...merged.values()]
       for (const cap of this.discoveredCache) {
-        this.statusMap.set(cap.id, cap.status)
+        if (!this.recipes?.has(cap.id)) this.statusMap.set(cap.id, cap.status)
+      }
+      // CLI discovery can detect an executable, not authenticated identity.
+      // Re-check each reviewed method through the recipe before reporting connected.
+      for (const [id, recipe] of this.recipes ?? []) {
+        this.statusMap.set(id, 'available')
+        try {
+          if (!this.recipeEngine || !recipe.intents.verify) continue
+          const result = await this.recipeEngine.executeIntent(recipe, 'verify')
+          const final = recipe.intents.verify.steps.at(-1)
+          this.statusMap.set(id, result.state === 'completed' &&
+            final?.type === 'assert.expression' && result.stepOutputs[final.id]?.passed === true
+            ? 'connected' : 'error')
+        } catch { this.statusMap.set(id, 'error') }
       }
       this.lastRefresh = Date.now()
       await this.saveCache()
@@ -209,7 +225,7 @@ export class CapabilityRegistry {
     for (const cap of this.discoveredCache) merged.set(cap.id, cap)
     return [...merged.values()].map((cap) => ({
       ...cap,
-      status: this.statusMap.get(cap.id) ?? cap.status,
+      status: this.statusMap.get(cap.id) ?? (this.recipes?.has(cap.id) || cap.id === 'lark-im' ? 'available' : cap.status),
     }))
   }
 
@@ -275,6 +291,7 @@ export class CapabilityRegistry {
 
     // Try recipe first
     const recipe = this.findRecipe(id)
+    if (recipe && !this.recipeEngine) throw new RecipeFailedError('验证执行器不可用', false, 'recipe_engine_unavailable')
     if (recipe && this.recipeEngine) {
       const result = await this.recipeEngine.executeIntent(recipe, 'connect')
       this.handleRecipeResult(result, id, 'connect')
@@ -292,8 +309,11 @@ export class CapabilityRegistry {
     const cap = await this.catalog.get(id)
     if (!cap || cap.type !== 'connector') return
 
-    // Try recipe "disconnect" intent (if exists)
+    // A read-only identity method has no reviewed credential-revocation flow.
     const recipe = this.findRecipe(id)
+    if (recipe && !recipe.intents.disconnect) {
+      throw new RecipeFailedError('此接入方法暂不支持断开或撤权', false, 'disconnect_unsupported')
+    }
     if (recipe && this.recipeEngine && recipe.intents.disconnect) {
       const result = await this.recipeEngine.executeIntent(recipe, 'disconnect')
       this.handleRecipeResult(result, id, 'disconnect')
@@ -319,11 +339,12 @@ export class CapabilityRegistry {
     if (recipe && this.recipeEngine && recipe.intents.verify) {
       const result = await this.recipeEngine.executeIntent(recipe, 'verify')
       if (result.state === 'completed') {
-        // Derive health from step outputs
-        const healthy = this.checkVerificationResult(result.stepOutputs)
+        // Only the reviewed verify intent's final assertion may establish health.
+        const final = recipe.intents.verify.steps.at(-1)
+        const healthy = final?.type === 'assert.expression' &&
+          result.stepOutputs[final.id]?.passed === true
         const status: CapabilityStatus = healthy ? 'connected' : 'expired'
         this.statusMap.set(id, status)
-        this.refreshInBackground().catch(() => {})
         return { healthy, lastChecked: Date.now() }
       }
       if (result.state === 'failed') {
@@ -332,7 +353,11 @@ export class CapabilityRegistry {
       }
     }
 
-    // Fallback to adapter health
+    if (recipe) {
+      this.statusMap.set(id, 'error')
+      return { healthy: false, message: '验证执行器不可用或需要额外操作', lastChecked: Date.now() }
+    }
+    // Non-recipe transports retain their native health adapter.
     return this.health(id)
   }
 
@@ -340,13 +365,12 @@ export class CapabilityRegistry {
    * Reauthorize a connector. Runs the recipe's "reauthorize" intent.
    */
   async reauthorize(id: string): Promise<void> {
-    const recipe = this.findRecipe(id)
-    if (recipe && this.recipeEngine && recipe.intents.reauthorize) {
-      const result = await this.recipeEngine.executeIntent(recipe, 'reauthorize')
-      this.handleRecipeResult(result, id, 'reauthorize')
-      return
+    // Old UI treats HTTP 202 as success and exposes a mutable checkpoint.
+    // Do not start interactive authorization until an explicit durable
+    // challenge/consent protocol is implemented and tested.
+    if (this.findRecipe(id)) {
+      throw new RecipeFailedError('请使用官方 CLI 独立完成授权后重新验证', false, 'reauthorize_unsupported')
     }
-    // Fallback: try connect
     await this.connect(id)
   }
 
@@ -354,9 +378,11 @@ export class CapabilityRegistry {
   async health(id: string): Promise<HealthStatus> {
     const cap = await this.catalog.get(id)
     if (!cap) return { healthy: false, message: 'Not found' }
+    if (this.findRecipe(id)) return this.verify(id)
     if (cap.type === 'connector') {
       if (cap.transport === 'mcp') return (await this.mcpAdapter?.health(cap)) ?? { healthy: false }
       if (cap.transport === 'cli') return (await this.cliAdapter?.health(cap)) ?? { healthy: false }
+      return { healthy: false, message: 'Provider verification not available' }
     }
     return { healthy: true }
   }
@@ -369,18 +395,17 @@ export class CapabilityRegistry {
 
   private handleRecipeResult(result: RecipeRunResult, capId: string, intent: string): void {
     if (result.state === 'completed') {
-      // Derive status from step outputs
-      const healthy = this.checkVerificationResult(result.stepOutputs)
-      this.statusMap.set(capId, healthy ? 'connected' : 'expired')
+      const recipe = this.findRecipe(capId)
+      const final = recipe?.intents[intent]?.steps.at(-1)
+      const healthy = final?.type === 'assert.expression' &&
+        result.stepOutputs[final.id]?.passed === true
+      this.statusMap.set(capId, healthy ? 'connected' : 'error')
+      if (!healthy) throw new RecipeFailedError('缺少明确的身份验证证据', false, 'verification_missing')
 
-      // V0.4: Persist connection instance to runtime store
-      if (this.runtimeStore && healthy) {
-        this.persistInstance(capId, intent, result.stepOutputs)
-      } else if (this.runtimeStore && intent === 'disconnect') {
-        this.runtimeStore.remove(`recipe:${capId}:1.0.0`)
-      }
-
-      this.refreshInBackground().catch(() => {})
+      // Identity-only probes must not invent business capabilities or persist
+      // an account-less connection record as a fully usable instance.
+      // The verified status is already visible through list(); an extra
+      // background probe here could race and overwrite this fresh outcome.
       return
     }
 

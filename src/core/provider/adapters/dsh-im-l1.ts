@@ -34,7 +34,7 @@ interface DshImService {
 
 export function createDshImL1Provider(ctx: DshImL1Context): CapabilityProvider {
   const { dshImService, packageVersion } = ctx
-  const isInstalled = dshImService !== undefined || packageVersion !== undefined
+  const isInstalled = typeof dshImService?.listBots === 'function'
 
   const descriptor: ProviderDescriptor = {
     id: 'dsh-im',
@@ -85,29 +85,25 @@ export function createDshImL1Provider(ctx: DshImL1Context): CapabilityProvider {
         const bots = await dshImService.listBots()
         if (!Array.isArray(bots)) return []
 
-        return bots.map((bot: any) => {
-          const rawStatus = bot.status || bot.state || 'unknown'
-          const observed = normalizeObservedState(
-            rawStatus,
-            bot.available === true || rawStatus === 'ready',
-            undefined,
-          )
+        return bots.filter((bot: any) => bot && typeof bot === 'object' &&
+          typeof bot.botId === 'string' && bot.botId.length > 0).map((bot: any) => {
+          // dsh-im's documented browser snapshot uses connected === true
+          // as authoritative; a stale textual state or available flag is not proof.
+          const connected = bot.connected === true && bot.configured !== false
+          const rawStatus = connected ? 'connected' : 'offline'
+          const observed = normalizeObservedState(rawStatus, connected, undefined)
           const healthState = deriveHealthState(observed, rawStatus)
 
           return {
-            externalInstanceId: bot.id || bot.botId || bot.name || 'unknown',
+            externalInstanceId: bot.botId,
             methodId: 'dsh-im-bot',
             integrationId: 'dsh-im',
-            displayName: bot.name || bot.appName || '飞书 Bot',
+            displayName: bot.bot && typeof bot.bot.name === 'string' ? bot.bot.name : '飞书 Bot',
             observedState: observed,
             rawStatus,
             observedAt: new Date().toISOString(),
             healthState,
-            safeMetadata: {
-              appId: bot.appId || null,
-              brand: bot.brand || null,
-              available: bot.available ?? null,
-            },
+            safeMetadata: { configured: bot.configured === true },
             activeCapabilities: observed === 'connected'
               ? ['message.send', 'message.receive']
               : [],
